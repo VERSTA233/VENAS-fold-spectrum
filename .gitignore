@@ -1,0 +1,20 @@
+.gradle/
+.kotlin/
+**/build/
+local.properties
+*.iml
+.idea/
+.DS_Store
+dist/
+
+# Local device captures, diagnostics and session handoff notes
+docs/evidence/
+docs/HANDOFF.md
+
+# Local credentials and signing material
+.env
+.env.*
+!.env.example
+*.jks
+*.keystore
+key.properties

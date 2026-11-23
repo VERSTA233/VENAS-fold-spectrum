@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-feature android:name="android.hardware.sensor.hinge_angle" android:required="false" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
+    <application android:theme="@style/Theme.VenasFoldSpectrum" android:label="VenasFoldSpectrum"
+        android:icon="@mipmap/ic_launcher" android:allowBackup="false" android:supportsRtl="true"
+        android:dataExtractionRules="@xml/data_extraction_rules">
+        <activity android:name=".MainActivity" android:exported="true"
+            android:launchMode="singleTask"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|uiMode"
+            android:resizeableActivity="true">
+            <meta-data android:name="com.samsung.android.foldable.flex_mode" android:value="false" />
+            <property android:name="android.window.PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY" android:value="true" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <service android:name=".media.MediaAccessService" android:label="VenasFoldSpectrum 媒体信息"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE" android:exported="true">
+            <intent-filter><action android:name="android.service.notification.NotificationListenerService" /></intent-filter>
+        </service>
+    </application>
+</manifest>
