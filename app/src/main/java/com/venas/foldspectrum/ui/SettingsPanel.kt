@@ -33,7 +33,6 @@ import androidx.compose.ui.window.DialogWindowProvider
 import com.venas.foldspectrum.DeskState
 import com.venas.foldspectrum.applyDisplayPreferences
 import kotlin.math.roundToInt
-import kotlinx.coroutines.delay
 
 data class SettingsActions(
     val flip: (Boolean) -> Unit,
@@ -103,14 +102,8 @@ internal fun SettingsDialog(state: DeskState, actions: SettingsActions, onDismis
 
 @Composable
 private fun SettingsControls(state: DeskState, actions: SettingsActions, modifier: Modifier) {
-    // Only poll while settings are composed, including changes from hardware keys/routes.
-    LaunchedEffect(actions) {
-        while (true) { actions.refreshMediaVolume(); delay(500) }
-    }
     Column(modifier.fillMaxWidth()) {
-        SettingSwitch("旋转 180°",
-            if (state.nonFoldMode) "反转横屏显示方向" else "帐篷摆放默认关闭，背板朝下时开启",
-            state.flip, actions.flip)
+        SettingSwitch("旋转 180°", "反转横屏显示方向", state.flip, actions.flip)
         HorizontalDivider(color = Divider)
         SettingSwitch("非折叠模式", "横放显示可视化，竖起返回初始页", state.nonFoldMode, actions.nonFoldMode)
         HorizontalDivider(color = Divider)
@@ -120,26 +113,14 @@ private fun SettingsControls(state: DeskState, actions: SettingsActions, modifie
             !state.followSystemBrightness, { manual -> actions.followSystemBrightness(!manual) },
             if (state.followSystemBrightness) "跟随系统亮度" else "手动亮度")
         AnimatedVisibility(!state.followSystemBrightness, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
-            Slider(value = state.brightness, onValueChange = actions.brightness,
+            CompactSlider(value = state.brightness, onValueChange = actions.brightness,
                 onValueChangeFinished = actions.saveBrightness, valueRange = .1f..1f,
                 modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp))
         }
         HorizontalDivider(color = Divider)
-        Column(Modifier.fillMaxWidth().padding(vertical = 12.dp)) {
-            Text("音量调整", color = Ink, fontSize = 16.sp)
-            val adjustable = !state.volumeFixed && state.maxMediaVolume > state.minMediaVolume
-            Text(if (adjustable) "媒体音量 · ${state.mediaVolume} / ${state.maxMediaVolume}" else "当前输出不支持调整音量",
-                color = Muted, fontSize = 12.sp)
-            Slider(value = state.mediaVolume.toFloat().coerceIn(state.minMediaVolume.toFloat(),
-                maxOf(state.maxMediaVolume, state.minMediaVolume + 1).toFloat()),
-                onValueChange = { actions.mediaVolume(it.roundToInt()) }, enabled = adjustable,
-                valueRange = state.minMediaVolume.toFloat()..maxOf(state.maxMediaVolume, state.minMediaVolume + 1).toFloat(),
-                modifier = Modifier.fillMaxWidth().semantics { contentDescription = "系统媒体音量" })
-        }
-        HorizontalDivider(color = Divider)
         val supportsMask = Build.VERSION.SDK_INT >= 33
         SettingSwitch("防烧屏模式",
-            if (supportsMask) "闲置1分钟启用棋盘遮罩，每5分钟交替；触摸恢复。画面会变暗。"
+            if (supportsMask) "闲置1分钟后启用棋盘遮罩，画面会变暗"
             else "棋盘遮罩需要 Android 13 或更高版本",
             state.burnInEnabled && supportsMask, actions.burnInEnabled, enabled = supportsMask)
     }
@@ -174,5 +155,26 @@ internal fun SettingsGlyph() {
             drawLine(Ink, Offset(cx + radius, y), Offset(size.width - stroke / 2, y), stroke, StrokeCap.Round)
             drawCircle(Ink, radius, Offset(cx, y), style = Stroke(stroke))
         }
+    }
+}
+
+@Composable
+internal fun VolumeGlyph() {
+    Canvas(Modifier.size(16.dp)) {
+        val w = size.width
+        val h = size.height
+        val speaker = androidx.compose.ui.graphics.Path().apply {
+            moveTo(w * .08f, h * .35f)
+            lineTo(w * .28f, h * .35f)
+            lineTo(w * .52f, h * .13f)
+            lineTo(w * .52f, h * .87f)
+            lineTo(w * .28f, h * .65f)
+            lineTo(w * .08f, h * .65f)
+            close()
+        }
+        drawPath(speaker, Ink, style = Stroke(1.2.dp.toPx()))
+        drawArc(Ink, -55f, 110f, false, Offset(w * .39f, h * .2f),
+            androidx.compose.ui.geometry.Size(w * .5f, h * .6f),
+            style = Stroke(1.2.dp.toPx(), cap = StrokeCap.Round))
     }
 }

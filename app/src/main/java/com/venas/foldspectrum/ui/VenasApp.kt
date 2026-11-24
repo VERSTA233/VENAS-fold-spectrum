@@ -4,6 +4,11 @@ import android.graphics.Paint
 import android.os.Build
 import android.os.SystemClock
 import android.widget.Toast
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandHorizontally
+import androidx.compose.animation.shrinkHorizontally
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
@@ -13,6 +18,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -75,7 +81,7 @@ fun VenasApp(state: DeskState, onAudioPermission: () -> Unit, onNotificationPerm
     MaterialTheme(colorScheme = VenasColors) {
         var settingsOpen by rememberSaveable { mutableStateOf(false) }
         Box(Modifier.fillMaxSize().deskRotation(state).background(Background)) {
-            if (state.desk) DeskScreen(state, onToggle, onSkip, onSeek, settingsOpen) { settingsOpen = true }
+            if (state.desk) DeskScreen(state, onToggle, onSkip, onSeek, settingsOpen, settings) { settingsOpen = true }
             else Preparation(state, onAudioPermission, onNotificationPermission, settings, onRetryCover, onRetryAudio)
         }
         if (settingsOpen) SettingsDialog(state, settings) {
@@ -152,25 +158,43 @@ private fun PermissionCard(title: String, body: String, action: String, onClick:
 
 @Composable
 private fun DeskScreen(state: DeskState, onToggle: () -> Unit, onSkip: (Boolean) -> Unit, onSeek: (Long) -> Unit,
-                       settingsOpen: Boolean, onOpenSettings: () -> Unit) {
+                       settingsOpen: Boolean, settings: SettingsActions, onOpenSettings: () -> Unit) {
     val songFont = rememberSongTypeface()
     val scope = rememberCoroutineScope()
     var lastTouch by remember { mutableLongStateOf(SystemClock.elapsedRealtime()) }
     LaunchedEffect(state.burnInEnabled, settingsOpen) { lastTouch = SystemClock.elapsedRealtime() }
     var now by remember { mutableLongStateOf(SystemClock.elapsedRealtime()) }
     var settingsUntil by remember { mutableLongStateOf(0L) }
+    var volumeOpen by remember { mutableStateOf(false) }
     val settingsInteraction = remember { MutableInteractionSource() }
+    val volumeInteraction = remember { MutableInteractionSource() }
+    val sliderInteraction = remember { MutableInteractionSource() }
     val settingsPressed by settingsInteraction.collectIsPressedAsState()
-    val settingsVisible = settingsUntil != 0L || settingsPressed
+    val volumePressed by volumeInteraction.collectIsPressedAsState()
+    val sliderPressed by sliderInteraction.collectIsPressedAsState()
+    val sliderDragged by sliderInteraction.collectIsDraggedAsState()
+    val interacting = settingsPressed || volumePressed || sliderPressed || sliderDragged
+    fun renewShortcuts() { settingsUntil = SystemClock.elapsedRealtime() + 3000 }
+    val settingsVisible = settingsUntil != 0L || interacting
     val settingsAlpha = animateFloatAsState(if (settingsVisible) 1f else 0f,
-        tween(durationMillis = 180), label = "settings shortcut fade")
-    LaunchedEffect(settingsUntil) {
-        val deadline = settingsUntil
-        if (deadline != 0L) {
-            delay((deadline - SystemClock.elapsedRealtime()).coerceAtLeast(0))
-            // An older timeout must not dismiss a shortcut renewed by another tap.
-            if (settingsUntil == deadline) settingsUntil = 0L
+        tween(durationMillis = 180), label = "desk shortcuts fade")
+    LaunchedEffect(interacting) {
+        if (interacting || settingsUntil != 0L) renewShortcuts()
+    }
+    LaunchedEffect(settingsUntil, interacting) {
+        if (!interacting) {
+            val deadline = settingsUntil
+            if (deadline != 0L) {
+                delay((deadline - SystemClock.elapsedRealtime()).coerceAtLeast(0))
+                if (settingsUntil == deadline) settingsUntil = 0L
+            }
         }
+    }
+    LaunchedEffect(settingsVisible, settingsAlpha.value == 0f) {
+        if (!settingsVisible && settingsAlpha.value == 0f) volumeOpen = false
+    }
+    LaunchedEffect(volumeOpen, settings) {
+        if (volumeOpen) while (true) { settings.refreshMediaVolume(); delay(500) }
     }
     LaunchedEffect(Unit) { while (true) { now = SystemClock.elapsedRealtime(); delay(200) } }
     var progressRect by remember { mutableStateOf(Rect.Zero) }
@@ -272,7 +296,10 @@ private fun DeskScreen(state: DeskState, onToggle: () -> Unit, onSkip: (Boolean)
                 if (!canceled && finished) {
                     if (!moved) {
                         if (inCover && visibleCover.contains(down.position + travel)) toggle()
-                        else if (!inCover && !inProgress) settingsUntil = SystemClock.elapsedRealtime() + 3000
+                        else if (!inCover && !inProgress) {
+                            volumeOpen = false
+                            settingsUntil = SystemClock.elapsedRealtime() + 3000
+                        }
                     }
                     else if (horizontal && inProgress) {
                         newestTimeline?.let { current ->
@@ -376,12 +403,45 @@ private fun DeskScreen(state: DeskState, onToggle: () -> Unit, onSkip: (Boolean)
             }
         }
         if (settingsVisible || settingsAlpha.value > 0f) {
-            IconButton(onClick = { settingsUntil = 0L; onOpenSettings() }, interactionSource = settingsInteraction,
-                modifier = Modifier.align(Alignment.TopEnd).padding(end = horizontalGap)
-                    .offset(x = 16.dp, y = (38 * u).dp - 24.dp).size(48.dp)
-                    .graphicsLayer { alpha = settingsAlpha.value }
-                    .semantics { contentDescription = "打开设置" }) {
-                SettingsGlyph()
+            val adjustable = !state.volumeFixed && state.maxMediaVolume > state.minMediaVolume
+            CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides 0.dp) {
+                // Right anchor keeps both icons stationary as the slider grows to the left.
+                Row(Modifier.align(Alignment.TopEnd).padding(end = horizontalGap)
+                    .offset(x = 8.dp, y = (38 * u).dp - 24.dp)
+                    .graphicsLayer { alpha = settingsAlpha.value },
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Row(Modifier.clip(RoundedCornerShape(12.dp))
+                        .background(if (volumeOpen) Surface else Color.Transparent)
+                        .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {
+                            renewShortcuts()
+                        }, verticalAlignment = Alignment.CenterVertically) {
+                        AnimatedVisibility(volumeOpen,
+                            enter = expandHorizontally(tween(180), expandFrom = Alignment.End) + fadeIn(tween(180)),
+                            exit = shrinkHorizontally(tween(180), shrinkTowards = Alignment.End) + fadeOut(tween(180))) {
+                            CompactSlider(value = state.mediaVolume.toFloat(), enabled = adjustable,
+                                onValueChange = { settings.mediaVolume(it.roundToInt()); renewShortcuts() },
+                                onValueChangeFinished = { renewShortcuts() },
+                                valueRange = state.minMediaVolume.toFloat()..maxOf(state.maxMediaVolume, state.minMediaVolume + 1).toFloat(),
+                                interactionSource = sliderInteraction,
+                                modifier = Modifier.width(124.dp).padding(start = 12.dp, end = 4.dp).semantics {
+                                    contentDescription = if (adjustable) "系统媒体音量" else "当前输出不支持调整音量"
+                                })
+                        }
+                        IconButton(onClick = {
+                            settings.refreshMediaVolume()
+                            volumeOpen = !volumeOpen
+                            renewShortcuts()
+                        }, interactionSource = volumeInteraction,
+                            modifier = Modifier.width(32.dp).height(48.dp).semantics { contentDescription = "调整音量" }) {
+                            VolumeGlyph()
+                        }
+                    }
+                    IconButton(onClick = { volumeOpen = false; settingsUntil = 0L; onOpenSettings() },
+                        interactionSource = settingsInteraction,
+                        modifier = Modifier.width(32.dp).height(48.dp).semantics { contentDescription = "打开设置" }) {
+                        SettingsGlyph()
+                    }
+                }
             }
         }
     }
