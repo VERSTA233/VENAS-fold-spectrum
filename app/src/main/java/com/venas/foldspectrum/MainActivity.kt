@@ -29,6 +29,7 @@ class MainActivity : ComponentActivity() {
     private var isStarted = false
     private var appliedDesk = false
     private var appliedNonFoldMode = false
+    private var appliedManualLandscape = false
     private val microphone = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
         controller.refreshPermissions()
     }
@@ -43,8 +44,9 @@ class MainActivity : ComponentActivity() {
         controller = DeskController(applicationContext)
         activityScope.launch {
             controller.state.collect { state ->
-                if (state.desk != appliedDesk || state.nonFoldMode != appliedNonFoldMode) {
-                    applyWindow(state.desk, state.nonFoldMode)
+                if (state.desk != appliedDesk || state.nonFoldMode != appliedNonFoldMode ||
+                    state.manualLandscape != appliedManualLandscape) {
+                    applyWindow(state.desk, state.nonFoldMode, state.manualLandscape)
                 }
                 applyDisplayPreferences(window, state)
             }
@@ -55,14 +57,16 @@ class MainActivity : ComponentActivity() {
                 SettingsActions(controller::setFlip, controller::setNonFoldMode,
                     controller::setKeepScreenOn, controller::setFollowSystemBrightness,
                     controller::setBrightness, controller::saveBrightness,
-                    controller::setBurnInEnabled, controller::refreshMediaVolume, controller::setMediaVolume)
+                    controller::setBurnInEnabled, controller::refreshMediaVolume, controller::setMediaVolume,
+                    controller::setSpectrumGainEnabled, controller::setSpectrumGainDb)
             }
-            BackHandler(state.desk || state.entering) { controller.exitDesk() }
+            BackHandler(state.desk || state.entering || state.manualLandscape) { controller.exitDesk() }
             VenasApp(state, onAudioPermission = ::requestAudioPermission,
                 onNotificationPermission = ::requestNotificationPermission,
                 settings = settings, onToggle = controller::toggle,
                 onSkip = controller::skip, onSeek = controller::seek,
-                onRetryCover = controller::retryCover, onRetryAudio = controller::retryAudio)
+                onRetryCover = controller::retryCover, onRetryAudio = controller::retryAudio,
+                onRotate = controller::rotateIntoDesk)
         }
     }
 
@@ -109,8 +113,9 @@ class MainActivity : ComponentActivity() {
         controller.displayChanged(mode != null && mode.physicalWidth > mode.physicalHeight)
     }
 
-    private fun applyWindow(desk: Boolean, nonFoldMode: Boolean) {
+    private fun applyWindow(desk: Boolean, nonFoldMode: Boolean, manualLandscape: Boolean) {
         appliedDesk = desk; appliedNonFoldMode = nonFoldMode
+        appliedManualLandscape = manualLandscape
         if (desk) {
             // ColorOS can pin the display rotation in TENT even when the Activity
             // requests the opposite landscape. Keep one base orientation and flip
@@ -118,7 +123,8 @@ class MainActivity : ComponentActivity() {
             requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE
             hideBars()
         } else {
-            requestedOrientation = if (nonFoldMode) ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            requestedOrientation = if (manualLandscape) ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE
+                else if (nonFoldMode) ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
                 else ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
             WindowCompat.getInsetsController(window, window.decorView).show(WindowInsetsCompat.Type.systemBars())
         }

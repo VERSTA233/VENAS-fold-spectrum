@@ -15,6 +15,21 @@ android {
         testInstrumentationRunner = "com.venas.foldspectrum.SongTypographyInstrumentation"
     }
     buildFeatures { compose = true; buildConfig = true }
+    buildTypes {
+        release {
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
+        }
+        // Shareable optimized test APK; production releases use their own signing key.
+        create("preview") {
+            initWith(getByName("release"))
+            isMinifyEnabled = true
+            isShrinkResources = true
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += "release"
+        }
+    }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -26,10 +41,8 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.10.0")
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.compose.ui:ui:1.7.6")
-    implementation("androidx.compose.ui:ui-tooling-preview:1.7.6")
     implementation("androidx.compose.foundation:foundation:1.7.6")
     implementation("androidx.compose.material3:material3:1.3.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
-    debugImplementation("androidx.compose.ui:ui-tooling:1.7.6")
     testImplementation("junit:junit:4.13.2")
 }

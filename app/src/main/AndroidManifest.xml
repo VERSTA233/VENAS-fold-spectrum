@@ -5,7 +5,7 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-feature android:name="android.hardware.sensor.hinge_angle" android:required="false" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
-    <application android:theme="@style/Theme.VenasFoldSpectrum" android:label="VenasFoldSpectrum"
+    <application android:theme="@style/Theme.VenasFoldSpectrum" android:label="VENAS Fold Spectrum"
         android:icon="@mipmap/ic_launcher" android:allowBackup="false" android:supportsRtl="true"
         android:dataExtractionRules="@xml/data_extraction_rules">
         <activity android:name=".MainActivity" android:exported="true"
@@ -19,7 +19,7 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-        <service android:name=".media.MediaAccessService" android:label="VenasFoldSpectrum 媒体信息"
+        <service android:name=".media.MediaAccessService" android:label="VENAS Fold Spectrum 媒体信息"
             android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE" android:exported="true">
             <intent-filter><action android:name="android.service.notification.NotificationListenerService" /></intent-filter>
         </service>

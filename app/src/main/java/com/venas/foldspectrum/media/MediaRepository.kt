@@ -40,8 +40,6 @@ data class NowPlaying(
     val positionReceivedAt: Long = 0,
 ) {
     val canSeek get() = duration > 0 && actions and PlaybackState.ACTION_SEEK_TO != 0L
-    fun positionNow(now: Long = SystemClock.elapsedRealtime()) =
-        positionAt(position, positionUpdatedAt, now, speed, playback == Playback.PLAYING, duration)
     fun seekTimeline() = SeekTimeline(
         source = "$sessionKey|$trackKey", duration = duration, position = position,
         updatedAt = positionUpdatedAt, revision = positionRevision, receivedAt = positionReceivedAt,
@@ -150,12 +148,23 @@ class MediaRepository(private val context: Context, private val scope: Coroutine
         val artist = md.getString(MediaMetadata.METADATA_KEY_ARTIST)
             ?: md.getString(MediaMetadata.METADATA_KEY_ALBUM_ARTIST)
             ?: md.getString(MediaMetadata.METADATA_KEY_DISPLAY_SUBTITLE) ?: "未知艺人"
-        val trackKey = "${c.packageName}|${md.getString(MediaMetadata.METADATA_KEY_MEDIA_ID).orEmpty()}|$title|$artist"
+        val trackKey = trackIdentity(c.packageName, md.getString(MediaMetadata.METADATA_KEY_MEDIA_ID), title, artist)
         val bitmap = sequenceOf(MediaMetadata.METADATA_KEY_ART, MediaMetadata.METADATA_KEY_ALBUM_ART, MediaMetadata.METADATA_KEY_DISPLAY_ICON)
             .mapNotNull { runCatching { md.getBitmap(it) }.getOrNull() }.firstOrNull()
         val uri = sequenceOf(MediaMetadata.METADATA_KEY_ART_URI, MediaMetadata.METADATA_KEY_ALBUM_ART_URI, MediaMetadata.METADATA_KEY_DISPLAY_ICON_URI)
             .mapNotNull { md.getString(it) }.firstOrNull()
         val old = mutable.value
+        val sameTrack = old?.trackKey == trackKey && old.sessionKey == key(c)
+        val previousArtwork = old?.takeIf { sameTrack }?.artwork
+        // Media apps can parcel identical pixels into a fresh Bitmap with each lyric.
+        // generationId is object-local, not an artwork identity. Preserve the old image
+        // if pixels match, while still accepting genuinely revised artwork for this song.
+        val artwork = when {
+            bitmap == null -> previousArtwork
+            bitmap === previousArtwork -> previousArtwork
+            previousArtwork != null && runCatching { bitmap.sameAs(previousArtwork) }.getOrDefault(false) -> previousArtwork
+            else -> bitmap
+        }
         val playback = when (ps.state) {
             PlaybackState.STATE_PLAYING, PlaybackState.STATE_FAST_FORWARDING, PlaybackState.STATE_REWINDING -> Playback.PLAYING
             PlaybackState.STATE_BUFFERING, PlaybackState.STATE_CONNECTING,
@@ -164,7 +173,7 @@ class MediaRepository(private val context: Context, private val scope: Coroutine
             else -> Playback.PAUSED
         }
         mutable.value = NowPlaying(c.packageName, trackKey, title, artist,
-            artwork = bitmap ?: old?.takeIf { it.trackKey == trackKey }?.artwork,
+            artwork = artwork,
             duration = md.getLong(MediaMetadata.METADATA_KEY_DURATION).coerceAtLeast(0),
             position = ps.position.coerceAtLeast(0), positionUpdatedAt = ps.lastPositionUpdateTime,
             speed = ps.playbackSpeed, playback = playback, actions = ps.actions,
@@ -172,15 +181,17 @@ class MediaRepository(private val context: Context, private val scope: Coroutine
         if (old?.trackKey != trackKey || old.playback != playback) {
             Log.i(TAG, "player=${c.packageName} playback=$playback duration=${mutable.value?.duration} actions=${ps.actions} art=${bitmap != null || uri != null}")
         }
-        val signature = "$trackKey|$uri|${bitmap?.generationId}"
+        val sessionKey = key(c)
+        val signature = "$sessionKey|$trackKey|$uri|${bitmap != null}"
         if (signature != artworkSignature) {
             artworkSignature = signature
             val revision = ++artworkRevision
             artworkJob?.cancel()
             if (bitmap == null && uri != null) artworkJob = scope.launch {
                 val loaded = withContext(Dispatchers.IO) { loadArtwork(uri) }
-                if (revision == artworkRevision && mutable.value?.trackKey == trackKey) {
-                    mutable.value = mutable.value?.copy(artwork = loaded)
+                if (revision == artworkRevision && mutable.value?.trackKey == trackKey && mutable.value?.sessionKey == sessionKey) {
+                    // A failed refresh must not erase the current song's valid cover.
+                    if (loaded != null) mutable.value = mutable.value?.copy(artwork = loaded)
                 }
             }
         }

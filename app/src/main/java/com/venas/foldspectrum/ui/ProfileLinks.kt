@@ -4,6 +4,7 @@ import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
+import androidx.annotation.DrawableRes
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -34,15 +35,18 @@ internal fun ProfileLinks() {
     }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp,
         androidx.compose.ui.Alignment.CenterHorizontally)) {
-        IconButton(onClick = { openBrowser("https://github.com/VERSTA233/VENAS-fold-spectrum") },
-            modifier = Modifier.size(48.dp)) {
-            Icon(painterResource(R.drawable.ic_github), contentDescription = "GitHub 项目仓库（浏览器打开）",
-                tint = Muted, modifier = Modifier.size(24.dp))
+        ProfileLink(R.drawable.ic_github, "GitHub 项目仓库（浏览器打开）") {
+            openBrowser("https://github.com/VERSTA233/VENAS-fold-spectrum")
         }
-        IconButton(onClick = { openBrowser("https://space.bilibili.com/34241475") },
-            modifier = Modifier.size(48.dp)) {
-            Icon(painterResource(R.drawable.ic_bilibili), contentDescription = "bilibili · 逆星朔影（浏览器打开）",
-                tint = Muted, modifier = Modifier.size(24.dp))
+        ProfileLink(R.drawable.ic_bilibili, "bilibili · 逆星朔影（浏览器打开）") {
+            openBrowser("https://space.bilibili.com/34241475")
         }
+    }
+}
+
+@Composable
+private fun ProfileLink(@DrawableRes icon: Int, label: String, onClick: () -> Unit) {
+    IconButton(onClick = onClick, modifier = Modifier.size(48.dp)) {
+        Icon(painterResource(icon), contentDescription = label, tint = Muted, modifier = Modifier.size(24.dp))
     }
 }

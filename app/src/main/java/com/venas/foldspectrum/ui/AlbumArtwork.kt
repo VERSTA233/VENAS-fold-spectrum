@@ -20,7 +20,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
@@ -170,7 +169,7 @@ internal class AlbumMotion(private val scope: CoroutineScope, initial: CoverArtw
 
 @Composable
 internal fun AlbumCover(bitmap: Bitmap?, modifier: Modifier = Modifier) {
-    Box(modifier.clip(RoundedCornerShape(12.dp)).background(Color(0xFF191C20))
+    Box(modifier.clip(RoundedCornerShape(12.dp)).background(Panel)
         .semantics { contentDescription = "专辑封面" }) {
         if (bitmap != null) Image(bitmap.asImageBitmap(), contentDescription = null,
             modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)

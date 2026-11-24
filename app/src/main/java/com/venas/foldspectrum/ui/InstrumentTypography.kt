@@ -1,5 +1,6 @@
 package com.venas.foldspectrum.ui
 
+import android.graphics.Paint
 import android.graphics.Typeface
 import android.graphics.fonts.Font as NativeFont
 import android.graphics.fonts.FontFamily as NativeFontFamily
@@ -22,7 +23,7 @@ internal val InstrumentFont = FontFamily(
 )
 
 /** Keep the declared line height even for a single line, across Latin/CJK fallback. */
-internal val SongTextStyle = TextStyle(
+internal val FixedLineTextStyle = TextStyle(
     platformStyle = PlatformTextStyle(includeFontPadding = false),
     lineHeightStyle = LineHeightStyle(
         alignment = LineHeightStyle.Alignment.Center,
@@ -45,11 +46,11 @@ internal fun songTypeface(resources: android.content.res.Resources): Typeface {
         .setSystemFallback("sans-serif").build()
 }
 
-/** Canvas labels use the same bundled face and weight as Compose labels. */
+/** Each Canvas owns its paint; font selection is shared with the Compose labels. */
 @Composable
-internal fun rememberInstrumentTypeface(): Typeface {
+internal fun rememberInstrumentPaint(): Paint {
     val resources = LocalContext.current.resources
     return remember(resources) {
-        resources.getFont(R.font.sf_mono_medium)
+        Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = resources.getFont(R.font.sf_mono_medium) }
     }
 }

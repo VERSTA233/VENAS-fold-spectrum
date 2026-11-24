@@ -28,12 +28,15 @@ data class DeskState(
     val angle: Float? = null,
     val desk: Boolean = false,
     val entering: Boolean = false,
+    val manualLandscape: Boolean = false,
     val flip: Boolean = false,
     val nonFoldMode: Boolean = false,
     val keepScreenOn: Boolean = true,
     val followSystemBrightness: Boolean = true,
     val brightness: Float = .5f,
     val burnInEnabled: Boolean = true,
+    val spectrumGainEnabled: Boolean = false,
+    val spectrumGainDb: Float = 0f,
     val mediaVolume: Int = 0,
     val minMediaVolume: Int = 0,
     val maxMediaVolume: Int = 0,
@@ -47,6 +50,7 @@ data class DeskState(
     val mediaDisappeared: Boolean = false,
     val audio: AudioFrame = AudioFrame(),
 ) {
+    val displayGainDb get() = if (spectrumGainEnabled) spectrumGainDb else 0f
     val permissionsReady get() = notificationGranted && audioGranted
     val status: DisplayStatus get() = displayStatus(
         if (mediaDisappeared) Playback.LOADING else media?.playback ?: Playback.STOPPED,
@@ -67,6 +71,8 @@ class DeskController(private val context: Context) {
         flip = preferences.getBoolean("flip", false), nonFoldMode = preferences.getBoolean("nonFoldMode", false),
         keepScreenOn = preferences.getBoolean("keepScreenOn", true),
         burnInEnabled = preferences.getBoolean("burnInEnabled", true),
+        spectrumGainEnabled = preferences.getBoolean("spectrumGainEnabled", false),
+        spectrumGainDb = preferences.getFloat("spectrumGainDb", 0f).coerceIn(-30f, 30f),
         followSystemBrightness = preferences.getBoolean("followSystemBrightness", true),
         brightness = preferences.getFloat("brightness", .5f).coerceIn(.1f, 1f)))
     val state = mutable.asStateFlow()
@@ -165,7 +171,8 @@ class DeskController(private val context: Context) {
         if (!visible || !mutable.value.nonFoldMode) return
         phoneAngle = degrees
         val posture = PhoneOrientation.posture(degrees, naturalLandscape)
-        mutable.update { it.copy(phonePosture = posture) }
+        mutable.update { it.copy(phonePosture = posture,
+            manualLandscape = it.manualLandscape && posture != PhonePosture.LANDSCAPE) }
         if (posture == PhonePosture.PORTRAIT) suppressed = false
         evaluateEntry()
     }
@@ -201,6 +208,14 @@ class DeskController(private val context: Context) {
 
     private fun evaluatePhonePosture() {
         val s = mutable.value
+        // A deliberate manual entry works while upright. Once physically horizontal,
+        // onPhoneOrientation releases this override and normal portrait exit resumes.
+        if (s.manualLandscape) {
+            phoneExitJob?.cancel()
+            phoneExitJob = null
+            if (!suppressed && !s.desk) enterDesk()
+            return
+        }
         if (s.phonePosture == PhonePosture.PORTRAIT) {
             if (s.desk && phoneExitJob?.isActive != true) {
                 phoneExitJob = scope.launch {
@@ -253,6 +268,17 @@ class DeskController(private val context: Context) {
 
     fun retryCover() { suppressed = false; evaluateEntry() }
 
+    fun rotateIntoDesk() {
+        if (mutable.value.desk || mutable.value.entering) return
+        mutable.update { it.copy(manualLandscape = !it.manualLandscape) }
+        if (mutable.value.manualLandscape) {
+            suppressed = false
+            // Fold mode retains the existing hinge/physical-TENT gate and cover request.
+            // Phone mode may enter on this explicit action without a physical rotation.
+            evaluateEntry()
+        }
+    }
+
     fun exitDesk(userInitiated: Boolean = true) {
         ++entryGeneration
         foldExitJob?.cancel()
@@ -260,7 +286,7 @@ class DeskController(private val context: Context) {
         phoneExitJob?.cancel()
         phoneExitJob = null
         if (userInitiated) suppressed = true
-        mutable.update { it.copy(desk = false, entering = false) }
+        mutable.update { it.copy(desk = false, entering = false, manualLandscape = false) }
         cover.reset()
         updateCapture()
     }
@@ -293,6 +319,18 @@ class DeskController(private val context: Context) {
     fun setBurnInEnabled(value: Boolean) {
         preferences.edit().putBoolean("burnInEnabled", value).apply()
         mutable.update { it.copy(burnInEnabled = value) }
+    }
+
+    fun setSpectrumGainEnabled(value: Boolean) {
+        preferences.edit().putBoolean("spectrumGainEnabled", value).apply()
+        mutable.update { it.copy(spectrumGainEnabled = value) }
+    }
+
+    fun setSpectrumGainDb(value: Float) {
+        val gain = kotlin.math.round(value).coerceIn(-30f, 30f)
+        if (gain == mutable.value.spectrumGainDb) return
+        preferences.edit().putFloat("spectrumGainDb", gain).apply()
+        mutable.update { it.copy(spectrumGainDb = gain) }
     }
 
     /** Read the active route's system media volume; never restore a saved volume. */

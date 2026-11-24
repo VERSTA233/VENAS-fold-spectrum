@@ -8,6 +8,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -44,9 +45,10 @@ data class SettingsActions(
     val burnInEnabled: (Boolean) -> Unit,
     val refreshMediaVolume: () -> Unit,
     val mediaVolume: (Int) -> Unit,
+    val spectrumGainEnabled: (Boolean) -> Unit,
+    val spectrumGainDb: (Float) -> Unit,
 )
 
-private val Panel = Color(0xFF191C20)
 private val Divider = Color(0xFF30343B)
 
 @Composable
@@ -118,6 +120,23 @@ private fun SettingsControls(state: DeskState, actions: SettingsActions, modifie
                 modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp))
         }
         HorizontalDivider(color = Divider)
+        SettingSwitch("频谱增益调节", "改变频谱波动幅度，不改变音频音量",
+            state.spectrumGainEnabled, actions.spectrumGainEnabled)
+        AnimatedVisibility(state.spectrumGainEnabled, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
+            Column(Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
+                val gain = state.spectrumGainDb.roundToInt()
+                val gainLabel = when {
+                    gain > 0 -> "+$gain dB"
+                    else -> "$gain dB"
+                }
+                Text("频谱显示 · $gainLabel", color = Muted, fontSize = 12.sp)
+                CompactSlider(value = state.spectrumGainDb, onValueChange = actions.spectrumGainDb,
+                    valueRange = -30f..30f, modifier = Modifier.fillMaxWidth().semantics {
+                        contentDescription = "频谱显示增益，单位分贝"
+                    })
+            }
+        }
+        HorizontalDivider(color = Divider)
         val supportsMask = Build.VERSION.SDK_INT >= 33
         SettingSwitch("防烧屏模式",
             if (supportsMask) "闲置1分钟后启用棋盘遮罩，画面会变暗"
@@ -142,7 +161,36 @@ private fun SettingSwitch(title: String, description: String, checked: Boolean, 
     }
 }
 
-/** 16dp visible glyph, aligned to its right edge; the button keeps a 48dp touch target. */
+/** Shared geometry and accessibility for the two adjacent desk shortcuts. */
+@Composable
+internal fun DeskActionButton(label: String, interaction: MutableInteractionSource,
+                              onClick: () -> Unit, icon: @Composable () -> Unit) {
+    IconButton(onClick = onClick, interactionSource = interaction,
+        modifier = Modifier.width(32.dp).height(48.dp).semantics { contentDescription = label },
+        content = icon)
+}
+
+/** 16dp visible glyph; the containing button owns its hit target. */
+@Composable
+internal fun RotationGlyph() {
+    Canvas(Modifier.size(22.dp)) {
+        val stroke = 1.6.dp.toPx()
+        val w = size.width
+        val h = size.height
+        drawRoundRect(Ink, Offset(w * .32f, h * .2f),
+            androidx.compose.ui.geometry.Size(w * .36f, h * .6f),
+            androidx.compose.ui.geometry.CornerRadius(2.dp.toPx()), style = Stroke(stroke))
+        drawArc(Ink, 195f, 100f, false, Offset(w * .04f, h * .04f),
+            androidx.compose.ui.geometry.Size(w * .92f, h * .92f), style = Stroke(stroke, cap = StrokeCap.Round))
+        drawLine(Ink, Offset(w * .69f, h * .08f), Offset(w * .52f, h * .04f), stroke, StrokeCap.Round)
+        drawLine(Ink, Offset(w * .69f, h * .08f), Offset(w * .63f, h * .24f), stroke, StrokeCap.Round)
+        drawArc(Ink, 15f, 100f, false, Offset(w * .04f, h * .04f),
+            androidx.compose.ui.geometry.Size(w * .92f, h * .92f), style = Stroke(stroke, cap = StrokeCap.Round))
+        drawLine(Ink, Offset(w * .31f, h * .92f), Offset(w * .48f, h * .96f), stroke, StrokeCap.Round)
+        drawLine(Ink, Offset(w * .31f, h * .92f), Offset(w * .37f, h * .76f), stroke, StrokeCap.Round)
+    }
+}
+
 @Composable
 internal fun SettingsGlyph() {
     Canvas(Modifier.size(16.dp)) {
