@@ -1,6 +1,5 @@
 package com.venas.foldspectrum.ui
 
-import android.os.Build
 import android.os.SystemClock
 import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
@@ -11,7 +10,6 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -42,7 +40,6 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.semantics.*
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.*
@@ -53,8 +50,8 @@ import kotlin.math.*
 
 @Composable
 fun VenasApp(state: DeskState, onAudioPermission: () -> Unit, onNotificationPermission: () -> Unit,
-             settings: SettingsActions, onToggle: () -> Unit, onSkip: (Boolean) -> Unit,
-             onSeek: (Long) -> Unit, onRetryCover: () -> Unit, onRetryAudio: () -> Unit,
+             settings: SettingsActions, onToggle: () -> Unit, onSkip: (Boolean) -> Boolean,
+             onSeek: (Long) -> Unit, onRetryCover: () -> Unit,
              onRotate: () -> Unit) {
     MaterialTheme(colorScheme = VenasColors) {
         var settingsOpen by rememberSaveable { mutableStateOf(false) }
@@ -70,7 +67,7 @@ fun VenasApp(state: DeskState, onAudioPermission: () -> Unit, onNotificationPerm
                     tutorialCompleted = true
                 }, onOpenSettings = { settingsOpen = true })
             else {
-                Preparation(state, onAudioPermission, onNotificationPermission, settings, onRetryCover, onRetryAudio)
+                Preparation(state, onAudioPermission, onNotificationPermission, settings, onRetryCover)
                 IconButton(onClick = onRotate, enabled = !state.entering,
                     modifier = Modifier.align(Alignment.TopEnd).safeDrawingPadding().padding(8.dp)
                         .semantics { contentDescription = if (state.manualLandscape) "恢复初始方向" else "横屏显示" }) {
@@ -95,9 +92,8 @@ internal fun Modifier.deskRotation(state: DeskState): Modifier = graphicsLayer {
 
 @Composable
 private fun Preparation(state: DeskState, audio: () -> Unit, notifications: () -> Unit,
-                        settings: SettingsActions, retryCover: () -> Unit, retryAudio: () -> Unit) {
+                        settings: SettingsActions, retryCover: () -> Unit) {
     val songFont = rememberSongTypeface()
-    var debug by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize().safeDrawingPadding().verticalScroll(rememberScrollState()).padding(28.dp),
         horizontalAlignment = Alignment.CenterHorizontally) {
         Text("VENAS / FOLD SPECTRUM", color = Muted, fontSize = 11.sp, letterSpacing = 2.sp,
@@ -126,18 +122,7 @@ private fun Preparation(state: DeskState, audio: () -> Unit, notifications: () -
             }
             ExpandableSettings(state, settings)
             ProfileLinks()
-            Text("调试信息", color = Muted, fontSize = 12.sp,
-                modifier = Modifier.clickable { debug = !debug }.padding(vertical = 8.dp))
-            if (debug) {
-                val details = "${Build.MANUFACTURER} ${Build.MODEL} · Android ${Build.VERSION.RELEASE}\n" +
-                    "Hinge ${state.angle?.let { "%.1f°".format(it) } ?: "—"} · state ${FoldRules.coverState(Build.MANUFACTURER)}\n" +
-                    "Phone ${state.phonePosture} · nonFold ${state.nonFoldMode}\n" +
-                    "Player ${state.media?.player ?: "—"}\n" +
-                    "Capture ${state.audio.capture} · frames ${state.audio.frames} · nonzero ${state.audio.nonzeroFrames}\n" +
-                    "${state.displayDetail}\n${state.audio.error.orEmpty()}"
-                Text(details, color = Muted, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
-                TextButton(onClick = retryAudio) { Text("重试音频读取") }
-            }
+
         }
     }
 }
@@ -152,7 +137,7 @@ private fun PermissionCard(title: String, body: String, action: String, onClick:
 }
 
 @Composable
-private fun DeskScreen(state: DeskState, onToggle: () -> Unit, onSkip: (Boolean) -> Unit, onSeek: (Long) -> Unit,
+private fun DeskScreen(state: DeskState, onToggle: () -> Unit, onSkip: (Boolean) -> Boolean, onSeek: (Long) -> Unit,
                        settingsOpen: Boolean, settings: SettingsActions, tutorialVisible: Boolean,
                        onFinishTutorial: () -> Unit, onOpenSettings: () -> Unit) {
     val songFont = rememberSongTypeface()
@@ -207,6 +192,7 @@ private fun DeskScreen(state: DeskState, onToggle: () -> Unit, onSkip: (Boolean)
     val context = LocalContext.current
     val artwork = CoverArtwork("${state.media?.sessionKey}|${state.media?.trackKey}", state.media?.artwork)
     val albumMotion = remember { AlbumMotion(scope, artwork) }
+    DisposableEffect(albumMotion) { onDispose { albumMotion.dispose() } }
     LaunchedEffect(artwork) { albumMotion.update(artwork) }
     var compactCover by remember { mutableStateOf(state.media?.playback == Playback.PAUSED) }
     LaunchedEffect(state.media?.playback) {
@@ -320,7 +306,7 @@ private fun DeskScreen(state: DeskState, onToggle: () -> Unit, onSkip: (Boolean)
                 seekProgress = seekProgress.cancelDrag()
                 if (turningPage) {
                     albumMotion.release(skipNext, releaseVelocity, visibleCover.width)
-                    skipNext?.let { skip(it) }
+                    skipNext?.let { if (!skip(it)) albumMotion.rejectSkip() }
                 }
             }
         }
@@ -331,6 +317,7 @@ private fun DeskScreen(state: DeskState, onToggle: () -> Unit, onSkip: (Boolean)
         val layout = deskLayout(maxWidth.value, maxHeight.value)
         val u = layout.unit
         val coverSize = layout.coverDp.dp
+        val coverTitleGap = rememberCoverTitleGap(layout, maxHeight, songFont, state.media?.artist.orEmpty())
         // One shared gap: screen -> album, album -> instruments, instruments -> screen.
         val horizontalGap = layout.horizontalGapDp.dp
         Box(Modifier.fillMaxSize()
@@ -352,16 +339,20 @@ private fun DeskScreen(state: DeskState, onToggle: () -> Unit, onSkip: (Boolean)
                             onClick(label = "播放或暂停") { onToggle(); true }
                             customActions = listOf(
                                 CustomAccessibilityAction("下一首") {
-                                    albumMotion.grab(); albumMotion.release(true, 0f, coverRect.width); onSkip(true); true
+                                    albumMotion.grab(); albumMotion.release(true, 0f, coverRect.width)
+                                    if (!onSkip(true)) albumMotion.rejectSkip()
+                                    true
                                 },
                                 CustomAccessibilityAction("上一首") {
-                                    albumMotion.grab(); albumMotion.release(false, 0f, coverRect.width); onSkip(false); true
+                                    albumMotion.grab(); albumMotion.release(false, 0f, coverRect.width)
+                                    if (!onSkip(false)) albumMotion.rejectSkip()
+                                    true
                                 },
                             )
                         }) {
                             TurningAlbum(albumMotion, { coverScale.value }, Modifier.fillMaxSize())
                         }
-                        Spacer(Modifier.height((16 * u).dp))
+                        Spacer(Modifier.height(coverTitleGap))
                         Column(Modifier.padding(start = (8 * u).dp)) {
                             SongText(media.title, songFont, color = Ink, fontSize = (21 * u).sp,
                                 lineHeight = (26 * u).sp, maxLines = 2)
@@ -383,7 +374,7 @@ private fun DeskScreen(state: DeskState, onToggle: () -> Unit, onSkip: (Boolean)
                     }
                     val drawing = smoothAudio(state)
                     Box(Modifier.fillMaxWidth().weight(1f)) {
-                        SpectrumChart(drawing.bands, drawing.layout, u, Modifier.fillMaxSize())
+                        SpectrumChart(drawing, u, Modifier.fillMaxSize())
                         if (state.status == DisplayStatus.UNSUPPORTED) Text("当前音频源不支持实时可视化",
                             color = Muted, fontSize = (13 * u).sp, textAlign = TextAlign.Center,
                             modifier = Modifier.align(Alignment.Center).background(Background).padding(12.dp))

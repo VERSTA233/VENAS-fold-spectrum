@@ -3,7 +3,6 @@ package com.venas.foldspectrum.media
 import android.content.ComponentName
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.media.MediaMetadata
 import android.media.session.MediaController
 import android.media.session.MediaSession
@@ -18,10 +17,22 @@ import android.view.KeyEvent
 import com.venas.foldspectrum.core.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlin.coroutines.CoroutineContext
 import java.net.HttpURLConnection
 import java.net.URL
 import java.io.InputStream
 import java.io.ByteArrayOutputStream
+
+/** Selection and display must agree on seeking/buffering sessions being active. */
+internal fun mediaPlayback(state: Int): Playback = when (state) {
+    PlaybackState.STATE_PLAYING, PlaybackState.STATE_FAST_FORWARDING, PlaybackState.STATE_REWINDING -> Playback.PLAYING
+    PlaybackState.STATE_BUFFERING, PlaybackState.STATE_CONNECTING,
+    PlaybackState.STATE_SKIPPING_TO_NEXT, PlaybackState.STATE_SKIPPING_TO_PREVIOUS,
+    PlaybackState.STATE_SKIPPING_TO_QUEUE_ITEM -> Playback.LOADING
+    else -> Playback.PAUSED
+}
 
 data class NowPlaying(
     val player: String,
@@ -57,10 +68,20 @@ class MediaRepository(private val context: Context, private val scope: Coroutine
     private val controllers = linkedMapOf<MediaSession.Token, Pair<MediaController, MediaController.Callback>>()
     private data class PositionObservation(val state: PlaybackState?, val revision: Long, val receivedAt: Long)
     private val positions = mutableMapOf<MediaSession.Token, PositionObservation>()
+    private data class MetadataSnapshot(val trackKey: String, val title: String, val artist: String,
+        val duration: Long, val bitmap: Bitmap?, val uri: String?)
+    // Store only what the UI uses, never the full parcel (which may contain lyrics
+    // and three copies of an album image). Playback ticks reuse this snapshot.
+    private val metadata = mutableMapOf<MediaSession.Token, MetadataSnapshot>()
     private var positionRevision = 0L
+    private val resumePosition = ResumePosition()
+    private var positionRetryJob: Job? = null
     private var running = false
     private var changesJob: Job? = null
     private var artworkJob: Job? = null
+    // Cancellation cannot interrupt a blocking network read immediately. Serialize
+    // downloads so rapid skips cannot accumulate large compressed buffers/decoders.
+    private val artworkLoadMutex = Mutex()
     private var artworkRevision = 0
     private var artworkSignature: String? = null
     private var selectedKey: String? = null
@@ -71,8 +92,13 @@ class MediaRepository(private val context: Context, private val scope: Coroutine
         running = true
         try {
             manager.addOnActiveSessionsChangedListener(listener, component, handler)
-            refresh()
-            changesJob = scope.launch { MediaAccessService.changes.collect { refresh() } }
+            // StateFlow immediately emits its current value, including on re-entry.
+            // Assign before starting: a denied first refresh calls stop(), which
+            // must be able to cancel this collector even on Main.immediate.
+            changesJob = scope.launch(start = CoroutineStart.LAZY) {
+                MediaAccessService.changes.collect { refresh() }
+            }
+            changesJob?.start()
         } catch (e: SecurityException) {
             Log.w(TAG, "Notification access unavailable", e)
             stop()
@@ -86,10 +112,12 @@ class MediaRepository(private val context: Context, private val scope: Coroutine
     }
 
     private fun updateControllers(list: List<MediaController>) {
+        if (!running) return
         val tokens = list.map { it.sessionToken }.toSet()
         controllers.keys.filter { it !in tokens }.forEach { token ->
             controllers.remove(token)?.let { (c, cb) -> c.unregisterCallback(cb) }
             positions.remove(token)
+            metadata.remove(token)
         }
         list.forEach { controller ->
             if (controllers.containsKey(controller.sessionToken)) return@forEach
@@ -101,83 +129,99 @@ class MediaRepository(private val context: Context, private val scope: Coroutine
                     positions[controller.sessionToken] = PositionObservation(state, ++positionRevision, SystemClock.elapsedRealtime())
                     publish()
                 }
-                override fun onMetadataChanged(metadata: MediaMetadata?) = publish()
+                override fun onMetadataChanged(metadata: MediaMetadata?) {
+                    if (controller.sessionToken in controllers) {
+                        updateMetadata(controller, metadata)
+                        publish()
+                    }
+                }
                 override fun onSessionDestroyed() {
                     controllers.remove(controller.sessionToken)?.let { (c, cb) -> c.unregisterCallback(cb) }
                     positions.remove(controller.sessionToken)
+                    metadata.remove(controller.sessionToken)
                     publish()
                 }
             }
             controller.registerCallback(callback, handler)
             controllers[controller.sessionToken] = controller to callback
             positions[controller.sessionToken] = PositionObservation(controller.playbackState, ++positionRevision, SystemClock.elapsedRealtime())
+            updateMetadata(controller, controller.metadata)
         }
         publish()
+    }
+
+    private fun updateMetadata(c: MediaController, md: MediaMetadata?) {
+        if (md == null) { metadata.remove(c.sessionToken); return }
+        val title = md.getString(MediaMetadata.METADATA_KEY_TITLE)
+            ?: md.getString(MediaMetadata.METADATA_KEY_DISPLAY_TITLE) ?: ""
+        val artist = md.getString(MediaMetadata.METADATA_KEY_ARTIST)
+            ?: md.getString(MediaMetadata.METADATA_KEY_ALBUM_ARTIST)
+            ?: md.getString(MediaMetadata.METADATA_KEY_DISPLAY_SUBTITLE) ?: "未知艺人"
+        val trackKey = trackIdentity(c.packageName, md.getString(MediaMetadata.METADATA_KEY_MEDIA_ID), title, artist)
+        val bitmap = sequenceOf(MediaMetadata.METADATA_KEY_ART, MediaMetadata.METADATA_KEY_ALBUM_ART, MediaMetadata.METADATA_KEY_DISPLAY_ICON)
+            .mapNotNull { md.getBitmap(it) }.firstOrNull()
+        val uri = sequenceOf(MediaMetadata.METADATA_KEY_ART_URI, MediaMetadata.METADATA_KEY_ALBUM_ART_URI, MediaMetadata.METADATA_KEY_DISPLAY_ICON_URI)
+            .mapNotNull { md.getString(it) }.firstOrNull()
+        val previous = metadata[c.sessionToken]?.takeIf { it.trackKey == trackKey }?.bitmap
+        metadata[c.sessionToken] = MetadataSnapshot(trackKey, title, artist,
+            md.getLong(MediaMetadata.METADATA_KEY_DURATION).coerceAtLeast(0),
+            bitmap?.let { boundedArtwork(it, previous) }, uri)
     }
 
     private fun key(c: MediaController) = "${c.packageName}:${c.sessionToken.hashCode()}"
     private fun playbackState(c: MediaController) = positions[c.sessionToken]?.state
 
     private fun publish() {
+        if (!running) return
         val usable = controllers.values.map { it.first }.filter {
             val ps = playbackState(it)
-            val title = it.metadata?.getString(MediaMetadata.METADATA_KEY_TITLE)
-                ?: it.metadata?.getString(MediaMetadata.METADATA_KEY_DISPLAY_TITLE)
+            val title = metadata[it.sessionToken]?.title
             ps != null && ps.state != PlaybackState.STATE_NONE && ps.state != PlaybackState.STATE_STOPPED &&
                 ps.state != PlaybackState.STATE_ERROR && !title.isNullOrBlank()
         }
         val candidates = usable.map { c ->
             val ps = playbackState(c)!!
-            SessionCandidate(key(c), ps.state in setOf(PlaybackState.STATE_PLAYING, PlaybackState.STATE_BUFFERING,
-                PlaybackState.STATE_CONNECTING, PlaybackState.STATE_SKIPPING_TO_NEXT, PlaybackState.STATE_SKIPPING_TO_PREVIOUS), ps.lastPositionUpdateTime)
+            SessionCandidate(key(c), mediaPlayback(ps.state) != Playback.PAUSED, ps.lastPositionUpdateTime)
         }
         val chosen = chooseSession(candidates, selectedKey)
         selected = usable.firstOrNull { key(it) == chosen }
         val c = selected
         if (c == null) {
             artworkJob?.cancel(); artworkSignature = null; artworkRevision++
+            positionRetryJob?.cancel(); positionRetryJob = null; resumePosition.clear()
             mutable.value = null
             return
         }
         selectedKey = chosen
-        val md = c.metadata ?: return
+        val md = metadata[c.sessionToken] ?: return
         val observation = positions[c.sessionToken] ?: return
         val ps = observation.state ?: return
-        val title = md.getString(MediaMetadata.METADATA_KEY_TITLE)
-            ?: md.getString(MediaMetadata.METADATA_KEY_DISPLAY_TITLE) ?: "未知曲目"
-        val artist = md.getString(MediaMetadata.METADATA_KEY_ARTIST)
-            ?: md.getString(MediaMetadata.METADATA_KEY_ALBUM_ARTIST)
-            ?: md.getString(MediaMetadata.METADATA_KEY_DISPLAY_SUBTITLE) ?: "未知艺人"
-        val trackKey = trackIdentity(c.packageName, md.getString(MediaMetadata.METADATA_KEY_MEDIA_ID), title, artist)
-        val bitmap = sequenceOf(MediaMetadata.METADATA_KEY_ART, MediaMetadata.METADATA_KEY_ALBUM_ART, MediaMetadata.METADATA_KEY_DISPLAY_ICON)
-            .mapNotNull { runCatching { md.getBitmap(it) }.getOrNull() }.firstOrNull()
-        val uri = sequenceOf(MediaMetadata.METADATA_KEY_ART_URI, MediaMetadata.METADATA_KEY_ALBUM_ART_URI, MediaMetadata.METADATA_KEY_DISPLAY_ICON_URI)
-            .mapNotNull { md.getString(it) }.firstOrNull()
+        val title = md.title
+        val artist = md.artist
+        val trackKey = md.trackKey
+        val bitmap = md.bitmap
+        val uri = md.uri
         val old = mutable.value
         val sameTrack = old?.trackKey == trackKey && old.sessionKey == key(c)
-        val previousArtwork = old?.takeIf { sameTrack }?.artwork
-        // Media apps can parcel identical pixels into a fresh Bitmap with each lyric.
-        // generationId is object-local, not an artwork identity. Preserve the old image
-        // if pixels match, while still accepting genuinely revised artwork for this song.
-        val artwork = when {
-            bitmap == null -> previousArtwork
-            bitmap === previousArtwork -> previousArtwork
-            previousArtwork != null && runCatching { bitmap.sameAs(previousArtwork) }.getOrDefault(false) -> previousArtwork
-            else -> bitmap
-        }
-        val playback = when (ps.state) {
-            PlaybackState.STATE_PLAYING, PlaybackState.STATE_FAST_FORWARDING, PlaybackState.STATE_REWINDING -> Playback.PLAYING
-            PlaybackState.STATE_BUFFERING, PlaybackState.STATE_CONNECTING,
-            PlaybackState.STATE_SKIPPING_TO_NEXT, PlaybackState.STATE_SKIPPING_TO_PREVIOUS,
-            PlaybackState.STATE_SKIPPING_TO_QUEUE_ITEM -> Playback.LOADING
-            else -> Playback.PAUSED
-        }
-        mutable.value = NowPlaying(c.packageName, trackKey, title, artist,
+        val artwork = bitmap ?: old?.takeIf { sameTrack }?.artwork
+        val playback = mediaPlayback(ps.state)
+        val observed = NowPlaying(c.packageName, trackKey, title, artist,
             artwork = artwork,
-            duration = md.getLong(MediaMetadata.METADATA_KEY_DURATION).coerceAtLeast(0),
+            duration = md.duration,
             position = ps.position.coerceAtLeast(0), positionUpdatedAt = ps.lastPositionUpdateTime,
             speed = ps.playbackSpeed, playback = playback, actions = ps.actions,
             sessionKey = key(c), positionRevision = observation.revision, positionReceivedAt = observation.receivedAt)
+        val progress = resumePosition.resolve(observed.seekTimeline(), SystemClock.elapsedRealtime())
+        mutable.value = observed.copy(position = progress.position, positionUpdatedAt = progress.updatedAt,
+            positionRevision = progress.revision, positionReceivedAt = progress.receivedAt)
+        positionRetryJob?.cancel()
+        positionRetryJob = resumePosition.retryAt?.let { deadline ->
+            scope.launch {
+                delay((deadline - SystemClock.elapsedRealtime()).coerceAtLeast(0))
+                positionRetryJob = null
+                publish()
+            }
+        }
         if (old?.trackKey != trackKey || old.playback != playback) {
             Log.i(TAG, "player=${c.packageName} playback=$playback duration=${mutable.value?.duration} actions=${ps.actions} art=${bitmap != null || uri != null}")
         }
@@ -188,7 +232,12 @@ class MediaRepository(private val context: Context, private val scope: Coroutine
             val revision = ++artworkRevision
             artworkJob?.cancel()
             if (bitmap == null && uri != null) artworkJob = scope.launch {
-                val loaded = withContext(Dispatchers.IO) { loadArtwork(uri) }
+                val loaded = withContext(Dispatchers.IO) {
+                    artworkLoadMutex.withLock {
+                        ensureActive()
+                        loadArtwork(uri, coroutineContext)
+                    }
+                }
                 if (revision == artworkRevision && mutable.value?.trackKey == trackKey && mutable.value?.sessionKey == sessionKey) {
                     // A failed refresh must not erase the current song's valid cover.
                     if (loaded != null) mutable.value = mutable.value?.copy(artwork = loaded)
@@ -197,33 +246,34 @@ class MediaRepository(private val context: Context, private val scope: Coroutine
         }
     }
 
-    private fun loadArtwork(value: String): Bitmap? = runCatching {
+    private fun loadArtwork(value: String, jobContext: CoroutineContext): Bitmap? = try {
         val uri = Uri.parse(value)
         val bytes = when (uri.scheme) {
             "content", "android.resource", "file" -> context.contentResolver.openInputStream(uri)?.use { stream ->
-                readArtworkBytes(stream)
+                readArtworkBytes(stream, jobContext)
             }
             "https" -> (URL(value).openConnection() as HttpURLConnection).let { connection ->
                 connection.connectTimeout = 4000; connection.readTimeout = 4000
-                try { connection.inputStream.use { readArtworkBytes(it) } }
+                try { connection.inputStream.use { readArtworkBytes(it, jobContext) } }
                 finally { connection.disconnect() }
             }
             else -> null
-        } ?: return@runCatching null
-        if (bytes.size > 6 * 1024 * 1024) return@runCatching null
-        val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
-        options.inSampleSize = 1
-        while (maxOf(options.outWidth, options.outHeight) / options.inSampleSize > 1024) options.inSampleSize *= 2
-        options.inJustDecodeBounds = false
-        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
-    }.getOrNull()
+        }
+        jobContext.ensureActive()
+        if (bytes == null || bytes.size > 6 * 1024 * 1024) null else decodeArtwork(bytes)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Log.w(TAG, "Artwork load failed: ${e.javaClass.simpleName}")
+        null
+    }
 
-    private fun readArtworkBytes(stream: InputStream): ByteArray {
+    private fun readArtworkBytes(stream: InputStream, jobContext: CoroutineContext): ByteArray {
         val limit = 6 * 1024 * 1024 + 1
         val output = ByteArrayOutputStream()
         val buffer = ByteArray(8192)
         while (output.size() < limit) {
+            jobContext.ensureActive()
             val read = stream.read(buffer, 0, minOf(buffer.size, limit - output.size()))
             if (read < 0) break
             output.write(buffer, 0, read)
@@ -247,9 +297,17 @@ class MediaRepository(private val context: Context, private val scope: Coroutine
     fun skip(next: Boolean): Boolean {
         val c = selected ?: return false
         val action = if (next) PlaybackState.ACTION_SKIP_TO_NEXT else PlaybackState.ACTION_SKIP_TO_PREVIOUS
-        if ((c.playbackState?.actions ?: 0) and action == 0L) return false
+        if ((c.playbackState?.actions ?: 0) and action == 0L) {
+            // An unsupported swipe stays on this item. Refresh its art without
+            // clearing the existing bitmap while a URI is being reloaded.
+            runCatching { c.metadata }.getOrNull()?.let { updateMetadata(c, it) }
+            artworkSignature = null
+            publish()
+            return false
+        }
         return runCatching {
             if (next) c.transportControls.skipToNext() else c.transportControls.skipToPrevious()
+            resumePosition.allowReset(SystemClock.elapsedRealtime())
             Log.i(TAG, "CONTROL ${if (next) "next" else "previous"} player=${c.packageName}")
             true
         }.getOrDefault(false)
@@ -269,6 +327,7 @@ class MediaRepository(private val context: Context, private val scope: Coroutine
                 c.dispatchMediaButtonEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_MEDIA_PAUSE))
             }
             c.transportControls.seekTo(target)
+            resumePosition.allowReset(SystemClock.elapsedRealtime())
             Log.i(TAG, "CONTROL seek=$target player=${c.packageName}")
             true
         }.getOrDefault(false)
@@ -278,8 +337,13 @@ class MediaRepository(private val context: Context, private val scope: Coroutine
         running = false
         runCatching { manager.removeOnActiveSessionsChangedListener(listener) }
         controllers.values.forEach { (c, cb) -> c.unregisterCallback(cb) }
-        controllers.clear(); positions.clear(); changesJob?.cancel(); artworkJob?.cancel()
+        controllers.clear(); positions.clear(); metadata.clear(); changesJob?.cancel(); artworkJob?.cancel()
+        positionRetryJob?.cancel(); positionRetryJob = null; resumePosition.clear()
+        changesJob = null; artworkJob = null
+        artworkRevision++
+        artworkSignature = null // A canceled URI load must be retried after returning.
         selected = null
+        mutable.value = null
     }
 
     companion object { const val TAG = "VenasMedia" }

@@ -6,7 +6,8 @@
     <uses-feature android:name="android.hardware.sensor.hinge_angle" android:required="false" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
     <application android:theme="@style/Theme.VenasFoldSpectrum" android:label="VENAS Fold Spectrum"
-        android:icon="@mipmap/ic_launcher" android:allowBackup="false" android:supportsRtl="true"
+        android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher"
+        android:allowBackup="false" android:supportsRtl="true"
         android:dataExtractionRules="@xml/data_extraction_rules">
         <activity android:name=".MainActivity" android:exported="true"
             android:launchMode="singleTask"

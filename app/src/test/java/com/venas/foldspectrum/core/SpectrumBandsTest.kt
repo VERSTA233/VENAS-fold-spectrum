@@ -15,7 +15,7 @@ class SpectrumBandsTest {
                 fft[bin * 2] = re.toByte()
                 fft[bin * 2 + 1] = im.toByte()
             }
-            assertTrue(SpectrumMath.bands(fft, layout).all { it == SpectrumMath.FLOOR_DB })
+            SpectrumMath.bands(fft, layout).forEach { assertEquals(SpectrumMath.FLOOR_DB, it, 0f) }
         }
     }
 

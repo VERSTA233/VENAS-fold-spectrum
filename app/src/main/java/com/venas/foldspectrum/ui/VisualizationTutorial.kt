@@ -32,7 +32,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.venas.foldspectrum.R
 
-private val GuideFont = FontFamily(Font(R.font.source_han_sans_sc_regular))
+private val GuideFont = FontFamily(Font(R.font.sarasa_gothic_sc_regular))
 
 /** Anchored to the measured controls, including wide-fold layouts and root rotation.
  * This layer owns all touches; reading the guide must not pause, skip or seek.

@@ -37,10 +37,13 @@ private fun Modifier.pixelMask(idle: Boolean, phase: Int): Modifier = composed {
             }
         """.trimIndent())
     }
+    val effect = remember(shader) {
+        RenderEffect.createRuntimeShaderEffect(shader, "content").asComposeRenderEffect()
+    }
     this.graphicsLayer {
         renderEffect = if (idle) {
             shader.setFloatUniform("phase", phase.toFloat())
-            RenderEffect.createRuntimeShaderEffect(shader, "content").asComposeRenderEffect()
+            effect
         } else null
     }
 }

@@ -44,7 +44,6 @@ data class DeskState(
     val hasOrientationSensor: Boolean = false,
     val phonePosture: PhonePosture = PhonePosture.UNKNOWN,
     val coverError: String? = null,
-    val displayDetail: String = "尚未请求外屏",
     val media: NowPlaying? = null,
     val changingTrack: Boolean = false,
     val mediaDisappeared: Boolean = false,
@@ -60,7 +59,7 @@ data class DeskState(
 class DeskController(private val context: Context) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val preferences = context.getSharedPreferences("venas", Context.MODE_PRIVATE)
-    val cover = CoverDisplay()
+    private val cover = CoverDisplay()
     private val sensor = HingeSensor(context, ::onAngle)
     private val phoneSensor = PhoneOrientationSensor(context, ::onPhoneOrientation)
     private val repository = MediaRepository(context, scope)
@@ -68,11 +67,12 @@ class DeskController(private val context: Context) {
     private val capture = AudioCapture(audioManager)
     private val mutable = MutableStateFlow(DeskState(hasHinge = sensor.available,
         hasOrientationSensor = phoneSensor.available,
-        flip = preferences.getBoolean("flip", false), nonFoldMode = preferences.getBoolean("nonFoldMode", false),
+        flip = preferences.getBoolean("flip", false),
+        nonFoldMode = initialNonFoldMode(context, preferences, sensor.available),
         keepScreenOn = preferences.getBoolean("keepScreenOn", true),
         burnInEnabled = preferences.getBoolean("burnInEnabled", true),
         spectrumGainEnabled = preferences.getBoolean("spectrumGainEnabled", false),
-        spectrumGainDb = preferences.getFloat("spectrumGainDb", 0f).coerceIn(-30f, 30f),
+        spectrumGainDb = preferences.getFloat("spectrumGainDb", 0f).coerceIn(-45f, 45f),
         followSystemBrightness = preferences.getBoolean("followSystemBrightness", true),
         brightness = preferences.getFloat("brightness", .5f).coerceIn(.1f, 1f)))
     val state = mutable.asStateFlow()
@@ -111,6 +111,7 @@ class DeskController(private val context: Context) {
     }
 
     fun foreground() {
+        val resuming = !visible
         if (!visible) {
             // A reading retained from a prior foreground session is not current.
             mutable.update { it.copy(angle = null, phonePosture = PhonePosture.UNKNOWN) }
@@ -121,7 +122,7 @@ class DeskController(private val context: Context) {
         suppressed = false
         refreshPermissions()
         startPostureDetection()
-        audioManager.registerAudioDeviceCallback(routing, Handler(Looper.getMainLooper()))
+        if (resuming) audioManager.registerAudioDeviceCallback(routing, Handler(Looper.getMainLooper()))
         evaluateEntry()
         updateCapture()
     }
@@ -245,8 +246,7 @@ class DeskController(private val context: Context) {
         if (mutable.value.nonFoldMode) {
             // A normal phone uses its current display; never request a vendor cover state.
             Log.i("VenasFold", "enter: phone landscape")
-            mutable.update { it.copy(desk = true, entering = false, coverError = null,
-                displayDetail = "非折叠模式 · 当前屏幕") }
+            mutable.update { it.copy(desk = true, entering = false, coverError = null) }
             updateCapture()
             return
         }
@@ -260,7 +260,7 @@ class DeskController(private val context: Context) {
                 return@launch
             }
             mutable.update { it.copy(entering = false, desk = result.success,
-                displayDetail = result.detail, coverError = if (result.success) null else "无法切换至外屏，请查看调试信息") }
+                coverError = if (result.success) null else "无法切换至外屏，请确认半折姿态后重试") }
             if (!result.success) suppressed = true
             updateCapture()
         }
@@ -295,6 +295,9 @@ class DeskController(private val context: Context) {
         saveBrightness()
         Log.i("VenasFold", "exit: application background")
         visible = false
+        disappearJob?.cancel(); disappearJob = null
+        endTrackChange()
+        mutable.update { it.copy(media = null, mediaDisappeared = false) }
         initialPostureJob?.cancel()
         initialPhysicalTent = false
         sensor.stop()
@@ -327,7 +330,7 @@ class DeskController(private val context: Context) {
     }
 
     fun setSpectrumGainDb(value: Float) {
-        val gain = kotlin.math.round(value).coerceIn(-30f, 30f)
+        val gain = kotlin.math.round(value).coerceIn(-45f, 45f)
         if (gain == mutable.value.spectrumGainDb) return
         preferences.edit().putFloat("spectrumGainDb", gain).apply()
         mutable.update { it.copy(spectrumGainDb = gain) }
@@ -377,11 +380,15 @@ class DeskController(private val context: Context) {
         phoneAngle = -1
         preferences.edit().putBoolean("nonFoldMode", value).apply()
         mutable.update { it.copy(nonFoldMode = value, angle = null, phonePosture = PhonePosture.UNKNOWN,
-            coverError = null, displayDetail = if (value) "非折叠模式 · 等待横放" else "尚未请求外屏") }
+            coverError = null) }
         if (visible) startPostureDetection()
     }
 
     private fun onMedia(item: NowPlaying?) {
+        if (!visible) {
+            mutable.update { it.copy(media = null, mediaDisappeared = false) }
+            return
+        }
         val old = mutable.value.media
         if (item == null) {
             if (old != null && disappearJob?.isActive != true) {
@@ -407,8 +414,12 @@ class DeskController(private val context: Context) {
             beginTrackChange(old?.trackKey)
             capture.clearTrackMeasurements()
         }
+        val alreadyCapturing = captureWanted
         updateCapture()
-        if (changedPlayer && captureWanted || newTrack && mutable.value.audio.capture == Capture.UNAVAILABLE && captureWanted) {
+        // A newly wanted capture was just started by updateCapture; restarting
+        // it here would create and immediately release a second Visualizer.
+        if (alreadyCapturing && captureWanted &&
+            (changedPlayer || newTrack && mutable.value.audio.capture == Capture.UNAVAILABLE)) {
             capture.restart()
         }
     }
@@ -433,7 +444,7 @@ class DeskController(private val context: Context) {
     private fun updateCapture() {
         val s = mutable.value
         val wanted = visible && s.desk && s.permissionsReady && !s.mediaDisappeared &&
-            s.media?.playback in setOf(Playback.PLAYING, Playback.LOADING)
+            (s.media?.playback == Playback.PLAYING || s.media?.playback == Playback.LOADING)
         if (wanted == captureWanted) return
         captureWanted = wanted
         // The verified Bluetooth fix lives in AudioCapture. Retaining a paused
@@ -453,14 +464,15 @@ class DeskController(private val context: Context) {
     }
 
     fun toggle() { if (mutable.value.media != null && !repository.toggle()) unsupportedControl() }
-    fun skip(next: Boolean) {
-        if (mutable.value.media == null) return
-        if (repository.skip(next)) beginTrackChange(mutable.value.media?.trackKey) else unsupportedControl()
+    fun skip(next: Boolean): Boolean {
+        if (mutable.value.media == null) return false
+        val accepted = repository.skip(next)
+        if (accepted) beginTrackChange(mutable.value.media?.trackKey) else unsupportedControl()
+        return accepted
     }
     fun seek(position: Long) { if (!repository.seek(position)) unsupportedControl() }
     private fun unsupportedControl() = Toast.makeText(context, "当前播放器不支持此操作", Toast.LENGTH_SHORT).show()
 
-    fun retryAudio() { if (captureWanted) capture.restart() }
 
     fun close() {
         background()

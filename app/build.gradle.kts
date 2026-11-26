@@ -10,11 +10,13 @@ android {
         applicationId = "com.venas.foldspectrum"
         minSdk = 31
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "1.0.0"
         testInstrumentationRunner = "com.venas.foldspectrum.SongTypographyInstrumentation"
     }
     buildFeatures { compose = true; buildConfig = true }
+    // Compress DEX in the distributable APK; Android extracts it at installation.
+    packaging { dex { useLegacyPackaging = true } }
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -24,7 +26,9 @@ android {
         // Shareable optimized test APK; production releases use their own signing key.
         create("preview") {
             initWith(getByName("release"))
-            isMinifyEnabled = true
+            applicationIdSuffix = ".preview"
+            versionNameSuffix = "-preview"
+            // Resource shrinking must be set explicitly for this custom build type.
             isShrinkResources = true
             signingConfig = signingConfigs.getByName("debug")
             matchingFallbacks += "release"

@@ -1,6 +1,9 @@
 .gradle/
 .kotlin/
+__pycache__/
 **/build/
+# Android Studio's signed APK export (keep local packages out of source control)
+app/release/
 local.properties
 *.iml
 .idea/

@@ -135,6 +135,14 @@ internal class AlbumMotion(private val scope: CoroutineScope, initial: CoverArtw
         }
     }
 
+    fun rejectSkip() {
+        if (waitingFrom == null) return
+        responseJob?.cancel()
+        responseJob = null
+        waitingFrom = null
+        reveal()
+    }
+
     private fun depart(page: TurningCover, target: Float, velocity: Float) {
         val from = page.progress
         page.job?.cancel()
@@ -164,6 +172,17 @@ internal class AlbumMotion(private val scope: CoroutineScope, initial: CoverArtw
             baseVisible = true
             arrival.animateTo(1f, spring(dampingRatio = 1f, stiffness = 220f))
         }
+    }
+
+    fun dispose() {
+        arrivalJob?.cancel(); arrivalJob = null
+        responseJob?.cancel(); responseJob = null
+        held?.job?.cancel()
+        departing.toList().forEach { it.job?.cancel() }
+        departing.clear()
+        held = null
+        waitingFrom = null
+        current = CoverArtwork("", null)
     }
 }
 

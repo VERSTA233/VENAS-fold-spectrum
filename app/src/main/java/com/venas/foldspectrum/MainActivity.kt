@@ -1,6 +1,7 @@
 package com.venas.foldspectrum
 
 import android.Manifest
+import android.animation.ValueAnimator
 import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.ActivityInfo
@@ -20,6 +21,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import com.venas.foldspectrum.media.MediaAccessService
 import com.venas.foldspectrum.ui.VenasApp
 import com.venas.foldspectrum.ui.SettingsActions
+import com.venas.foldspectrum.ui.SplashLogo
 import kotlinx.coroutines.*
 
 class MainActivity : ComponentActivity() {
@@ -30,6 +32,7 @@ class MainActivity : ComponentActivity() {
     private var appliedDesk = false
     private var appliedNonFoldMode = false
     private var appliedManualLandscape = false
+    private var splashLogo: SplashLogo? = null
     private val microphone = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
         controller.refreshPermissions()
     }
@@ -65,8 +68,11 @@ class MainActivity : ComponentActivity() {
                 onNotificationPermission = ::requestNotificationPermission,
                 settings = settings, onToggle = controller::toggle,
                 onSkip = controller::skip, onSeek = controller::seek,
-                onRetryCover = controller::retryCover, onRetryAudio = controller::retryAudio,
+                onRetryCover = controller::retryCover,
                 onRotate = controller::rotateIntoDesk)
+        }
+        if (savedInstanceState == null && ValueAnimator.areAnimatorsEnabled()) {
+            splashLogo = SplashLogo(this)
         }
     }
 
@@ -157,6 +163,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        splashLogo?.close()
         controller.close()
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         activityScope.cancel()

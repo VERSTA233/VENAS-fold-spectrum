@@ -26,7 +26,7 @@ import com.venas.foldspectrum.media.NowPlaying
 import java.util.Locale
 import kotlin.math.*
 
-private const val SpectrumFloorDb = -60f
+private const val SpectrumFloorDb = -90f
 private const val WaveformDisplayGain = 3f
 private val FrequencyLabels = listOf(20 to "20", 200 to "200", 500 to "500", 1000 to "1k",
     2000 to "2k", 4000 to "4k", 8000 to "8k", 16000 to "16k")
@@ -45,7 +45,13 @@ internal fun StatusLabel(status: DisplayStatus, u: Float) {
     }
 }
 
-internal data class DrawingFrame(val bands: FloatArray, val wave: FloatArray, val layout: List<SpectrumBand> = emptyList())
+internal data class DrawingFrame(
+    val bands: FloatArray,
+    val wave: FloatArray,
+    val layout: List<SpectrumBand> = emptyList(),
+    val peaks: FloatArray = FloatArray(0),
+    val barReferenceCount: Int = 0,
+)
 
 @Composable
 internal fun smoothAudio(state: DeskState): DrawingFrame {
@@ -63,6 +69,8 @@ internal fun smoothAudio(state: DeskState): DrawingFrame {
             val waveGain = WaveformDisplayGain * DisplayGain.amplitude(gain)
             // Retain the previous geometry while paused so the bars can decay.
             val layout = latest.audio.bandLayout.ifEmpty { rendered.layout }
+            val barReferenceCount = if (latest.audio.bandLayout.isEmpty()) rendered.barReferenceCount
+                else latest.audio.barReferenceCount
             val sameLayout = layout == rendered.layout
             val rise = 1f - exp(-dt / .10f)
             val fall = 1f - exp(-dt / .20f)
@@ -75,13 +83,19 @@ internal fun smoothAudio(state: DeskState): DrawingFrame {
                 val next = old + (target - old) * (if (target > old) rise else fall)
                 if (!active && abs(next - target) < .05f) target else next
             }
+            // Only the caps fall slowly; the spectrum and waveform retain their response.
+            val nextPeaks = FloatArray(layout.size) { index ->
+                val old = if (sameLayout) rendered.peaks[index] else SpectrumFloorDb
+                SpectrumPeak.advance(old, nextBands[index], dt)
+            }
             val nextWave = FloatArray(96) { index ->
                 val target = ((targetWave?.getOrNull(index) ?: 0f) * waveGain).coerceIn(-1f, 1f)
                 val next = rendered.wave[index] + (target - rendered.wave[index]) * waveBlend
                 if (!active && abs(next - target) < .001f) target else next
             }
-            if (!sameLayout || !nextBands.contentEquals(rendered.bands) || !nextWave.contentEquals(rendered.wave)) {
-                rendered = DrawingFrame(nextBands, nextWave, layout)
+            if (!sameLayout || !nextBands.contentEquals(rendered.bands) ||
+                !nextPeaks.contentEquals(rendered.peaks) || !nextWave.contentEquals(rendered.wave)) {
+                rendered = DrawingFrame(nextBands, nextWave, layout, nextPeaks, barReferenceCount)
             }
         }
     }
@@ -89,36 +103,57 @@ internal fun smoothAudio(state: DeskState): DrawingFrame {
 }
 
 @Composable
-internal fun SpectrumChart(bands: FloatArray, layout: List<SpectrumBand>, u: Float, modifier: Modifier) {
-    val defaultLayout = remember { SpectrumMath.bandLayout(1024, 48000) }
-    val axisLayout = layout.ifEmpty { defaultLayout }
+internal fun SpectrumChart(frame: DrawingFrame, u: Float, modifier: Modifier) {
+    val defaultLayout = remember { SpectrumMath.displayLayout(1024, 48000) }
+    val axisLayout = frame.layout.ifEmpty { defaultLayout.bands }
+    val barReferenceCount = frame.barReferenceCount.takeIf { it > 0 } ?: defaultLayout.referenceBandCount
     val textSize = with(LocalDensity.current) { (9 * u).sp.toPx() }
     val paint = rememberInstrumentPaint()
+    val floorLabelBounds = remember { android.graphics.Rect() }
     val dash = remember { PathEffect.dashPathEffect(floatArrayOf(3f, 6f)) }
     Canvas(modifier.semantics { contentDescription = "实时频谱，相对幅值刻度" }) {
         paint.textSize = textSize; paint.color = android.graphics.Color.rgb(126, 129, 138)
         val left = textSize * 3.5f
         val top = textSize * 2.3f
-        val right = size.width - textSize * .8f
-        val bottom = size.height - textSize * .5f
+        val right = size.width
+        paint.getTextBounds("−90", 0, 3, floorLabelBounds)
+        val labelBaselineOffset = textSize * .35f
+        // Extend the floor to the visible bottom of −90, retaining its text baseline.
+        val bottom = (size.height - textSize * .5f + labelBaselineOffset + floorLabelBounds.bottom)
+            .coerceAtMost(size.height)
         val width = right - left
         val height = (bottom - top).coerceAtLeast(1f)
-        for (j in 0..4) {
-            val y = top + height * j / 4f
+        // Removing the former right inset changes spacing, not the column width.
+        val barWidth = (width - textSize * .8f) / barReferenceCount * SpectrumMath.BAR_WIDTH_FRACTION
+        val step = (width - barWidth) / (axisLayout.size - 1).coerceAtLeast(1)
+        val axisLabelRight = paint.measureText("−90")
+        for (j in 0..3) {
+            val y = top + height * j / 3f
             drawLine(Grid, Offset(left, y), Offset(right, y), 1f, pathEffect = dash)
-            val label = if (j == 0) "0" else "−${j * 15}"
-            drawIntoCanvas { it.nativeCanvas.drawText(label, left - textSize * .8f - paint.measureText(label), y + textSize * .35f, paint) }
+            val label = if (j == 0) "0" else "−${j * 30}"
+            val baseline = if (j == 3) bottom - floorLabelBounds.bottom else y + labelBaselineOffset
+            drawIntoCanvas { it.nativeCanvas.drawText(label, axisLabelRight - paint.measureText(label), baseline, paint) }
         }
         FrequencyLabels.forEach { (hz, label) ->
             val fraction = SpectrumMath.frequencyPosition(hz.toDouble(), axisLayout) ?: return@forEach
             val x = left + fraction * width
             drawLine(Grid, Offset(x, top), Offset(x, bottom), 1f, pathEffect = dash)
-            drawIntoCanvas { it.nativeCanvas.drawText(label, (x - paint.measureText(label) / 2).coerceIn(0f, right - paint.measureText(label)), textSize, paint) }
+            val labelLeft = if (hz == 20) left
+                else if (hz == 16000) right - paint.measureText(label)
+                else (x - paint.measureText(label) / 2).coerceIn(0f, right - paint.measureText(label))
+            drawIntoCanvas { it.nativeCanvas.drawText(label, labelLeft, textSize, paint) }
         }
-        val step = width / bands.size.coerceAtLeast(1)
-        bands.forEachIndexed { index, db ->
+        val capHeight = (1f * u).dp.toPx().coerceIn(1f, height)
+        // Draw a cap for every band, including before the first sample and in silence.
+        axisLayout.indices.forEach { index ->
+            val db = frame.bands.getOrNull(index) ?: SpectrumFloorDb
+            val x = if (index == axisLayout.lastIndex) right - barWidth else left + index * step
             val h = ((db - SpectrumFloorDb) / -SpectrumFloorDb).coerceIn(0f, 1f) * height
-            if (h > .3f) drawRect(Color(0xFFB6B8BE), Offset(left + index * step + step * .18f, bottom - h), Size(step * .62f, h))
+            if (h > .3f) drawRect(Color(0xFFB6B8BE), Offset(x, bottom - h), Size(barWidth, h))
+            val peak = frame.peaks.getOrNull(index) ?: db
+            val peakHeight = ((peak - SpectrumFloorDb) / -SpectrumFloorDb).coerceIn(0f, 1f) * height
+            val capTop = (bottom - peakHeight).coerceIn(top, bottom - capHeight)
+            drawRect(Ink, Offset(x, capTop), Size(barWidth, capHeight))
         }
     }
 }
@@ -201,12 +236,15 @@ internal fun Metrics(state: DeskState, wave: FloatArray, layout: DeskLayout, mod
                 val pad = 1.dp.toPx()
                 val count = wave.size / 2
                 val step = (size.width - 2 * pad) / (count - 1).coerceAtLeast(1)
+                val strokeWidth = min(1.2.dp.toPx(), step * .3f)
                 for (i in 0 until count) {
                     val low = wave[2 * i]; val high = wave[2 * i + 1]
                     if (high - low > .005f) drawLine(Ink.copy(alpha = .8f),
                         Offset(pad + i * step, center.y - high * size.height * .42f),
                         Offset(pad + i * step, center.y - low * size.height * .42f),
-                        min(1.2.dp.toPx(), step * .3f), StrokeCap.Round)
+                        strokeWidth, StrokeCap.Round)
+                    else drawCircle(Ink.copy(alpha = .8f),
+                        radius = strokeWidth / 2f, center = Offset(pad + i * step, center.y))
                 }
             }
         }

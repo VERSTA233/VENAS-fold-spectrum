@@ -6,6 +6,71 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class AlbumMotionTest {
+    @Test fun unsupportedSkipImmediatelyRestoresTheCurrentCoverWithoutMetadataChanges() = runBlocking {
+        val frames = Frames()
+        val scope = CoroutineScope(coroutineContext + frames.clock + SupervisorJob())
+        try {
+            val motion = AlbumMotion(scope, CoverArtwork("video", null))
+            repeat(4) { index ->
+                motion.grab()
+                motion.move(-100f, 400f)
+                motion.release(index % 2 == 0, -600f, 400f)
+                assertEquals("waiting", motion.base.source)
+                motion.rejectSkip()
+                assertNull(motion.waitingFrom)
+                assertEquals("video", motion.base.source)
+                frames.advance(3)
+            }
+            frames.advance(100)
+            assertTrue(motion.departing.isEmpty())
+            assertTrue(motion.baseVisible)
+            assertEquals(1f, motion.arrival.value, .001f)
+            assertEquals("video", motion.base.source)
+        } finally { scope.cancel() }
+    }
+
+    @Test fun rejectionAfterANewTrackArrivesCannotRestoreTheOldCover() = runBlocking {
+        val frames = Frames()
+        val scope = CoroutineScope(coroutineContext + frames.clock + SupervisorJob())
+        try {
+            val motion = AlbumMotion(scope, CoverArtwork("old", null))
+            motion.grab()
+            motion.move(-100f, 400f)
+            motion.release(true, -600f, 400f)
+            motion.update(CoverArtwork("new", null))
+            motion.rejectSkip()
+            frames.advance(100)
+            assertEquals("new", motion.base.source)
+            assertNull(motion.waitingFrom)
+            assertTrue(motion.departing.isEmpty())
+        } finally { scope.cancel() }
+    }
+
+    @Test fun disposingDuringRapidSkipsReleasesPagesAndJobs() = runBlocking {
+        val frames = Frames()
+        val owner = SupervisorJob()
+        val scope = CoroutineScope(coroutineContext + frames.clock + owner)
+        try {
+            val motion = AlbumMotion(scope, CoverArtwork("first", null))
+            repeat(30) {
+                motion.update(CoverArtwork("song-$it", null))
+                motion.grab()
+                motion.move(-100f, 400f)
+                motion.release(true, -1500f, 400f)
+                frames.advance(1)
+            }
+            motion.grab()
+            motion.dispose()
+            frames.advance(3)
+            assertNull(motion.held)
+            assertNull(motion.waitingFrom)
+            assertTrue(motion.departing.isEmpty())
+            assertNull(motion.current.bitmap)
+            assertEquals("", motion.current.source)
+            assertTrue(owner.children.none())
+        } finally { scope.cancel() }
+    }
+
     @Test fun aTapDoesNotReplaceOrDimTheCoverLayer() = runBlocking {
         val motion = AlbumMotion(this, CoverArtwork("song", null))
         assertNull(motion.held)

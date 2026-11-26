@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <application android:label="VENAS 测试版" tools:replace="android:label">
+        <service android:name="com.venas.foldspectrum.media.MediaAccessService"
+            android:label="VENAS 测试版 媒体信息" tools:replace="android:label" />
+    </application>
+</manifest>

@@ -50,10 +50,31 @@ fun positionAt(position: Long, updatedAt: Long, now: Long, speed: Float, playing
 
 /** Android's packed FFT: DC at [0], Nyquist at [1], complex pairs thereafter. */
 data class SpectrumBand(val firstBin: Int, val lastBin: Int, val lowHz: Double, val highHz: Double)
+data class SpectrumLayout(val bands: List<SpectrumBand>, val referenceBandCount: Int)
 
 object SpectrumMath {
     private const val TARGET_BANDS = 64
     const val FLOOR_DB = -90f
+    const val BAR_WIDTH_FRACTION = .62f
+
+    /** Keep the previous frequency limits and column width; split real bins for more detail. */
+    fun displayLayout(fftSize: Int, sampleRateHz: Int): SpectrumLayout {
+        val original = bandLayout(fftSize, sampleRateHz)
+        val visible = original.dropLast(2).toMutableList()
+        val binHz = sampleRateHz.toDouble() / fftSize
+        // Sparse capture formats must retain gaps as well as the original bar width.
+        val limit = minOf(50, (original.size * .9f / BAR_WIDTH_FRACTION).toInt())
+        while (visible.size < limit) {
+            val index = visible.indices.maxByOrNull { visible[it].lastBin - visible[it].firstBin } ?: break
+            val band = visible[index]
+            if (band.firstBin == band.lastBin) break // Never reuse a bin to fill a column.
+            val middle = (band.firstBin + band.lastBin) / 2
+            val boundary = (middle + .5) * binHz
+            visible[index] = SpectrumBand(band.firstBin, middle, band.lowHz, boundary)
+            visible.add(index + 1, SpectrumBand(middle + 1, band.lastBin, boundary, band.highHz))
+        }
+        return SpectrumLayout(visible, original.size)
+    }
 
     /** Partition real FFT bins once, merging only bins that share a logarithmic slot. */
     fun bandLayout(fftSize: Int, sampleRateHz: Int): List<SpectrumBand> {
@@ -96,11 +117,7 @@ object SpectrumMath {
             for (bin in range.firstBin..range.lastBin) {
                 val re = if (bin == nyquistBin) fft[1].toInt() else fft[2 * bin].toInt()
                 val im = if (bin == nyquistBin) 0 else fft[2 * bin + 1].toInt()
-                // Visualizer's signed 8-bit FFT has a one-code quantization floor.
-                // In particular (-1, -1) otherwise becomes -42.1 on our relative
-                // scale. Wide bands almost always contain such a bin. Values
-                // within one code of zero cannot reliably identify weak audio;
-                // reject them before taking the maximum, equally at every Hz.
+                // Single-code FFT residue can otherwise form a high-frequency pedestal.
                 if (abs(re) <= 1 && abs(im) <= 1) continue
                 magnitude = max(magnitude, hypot(re.toDouble(), im.toDouble()))
             }

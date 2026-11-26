@@ -28,54 +28,64 @@ class HingeSensor(context: Context, private val onAngle: (Float) -> Unit) : Sens
 data class DisplayResult(val success: Boolean, val detail: String)
 
 /** Serialized app-UID commands; ADB/shell privileges are never used by the product. */
-class CoverDisplay {
-    val stateId = FoldRules.coverState(Build.MANUFACTURER)
+internal class CoverDisplay(
+    private val manufacturer: String = Build.MANUFACTURER,
+    private val execute: (Array<out String>) -> DisplayResult = ::deviceStateCommand,
+) {
+    private val stateId = FoldRules.coverState(manufacturer)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mutex = Mutex()
     private var ownsOverride = false
 
     suspend fun enter(): DisplayResult = mutex.withLock {
-        val result = withContext(Dispatchers.IO) { command("state", stateId.toString()) }
-        ownsOverride = result.success
-        result
+        withContext(Dispatchers.IO) {
+            execute(arrayOf("state", stateId.toString())).also {
+                // The command may succeed after the caller is cancelled. Record
+                // ownership before withContext's cancellable return, so reset can undo it.
+                ownsOverride = ownsOverride || it.success
+            }
+        }
     }
 
     /** Read the physical base posture once at entry, using the app's own UID. */
     suspend fun isPhysicallyTent(): Boolean = mutex.withLock {
-        val result = withContext(Dispatchers.IO) { command("state") }
+        val result = withContext(Dispatchers.IO) { execute(arrayOf("state")) }
         result.success && FoldRules.isPhysicalTent(result.detail)
     }
 
-    fun reset(onComplete: (() -> Unit)? = null) {
-        scope.launch {
-            mutex.withLock {
-                if (ownsOverride) {
-                    val first = command("state", "reset")
-                    if (Build.MANUFACTURER.contains("honor", true)) { delay(120); command("state", "reset") }
-                    ownsOverride = !first.success
+    fun reset(): Job = scope.launch {
+        mutex.withLock {
+            if (ownsOverride) {
+                var reset = execute(arrayOf("state", "reset")).success
+                if (manufacturer.contains("honor", true)) {
+                    delay(120)
+                    reset = execute(arrayOf("state", "reset")).success || reset
                 }
+                ownsOverride = !reset
             }
-            onComplete?.invoke()
         }
     }
 
-    private fun command(vararg arguments: String): DisplayResult = try {
-        val process = ProcessBuilder("/system/bin/cmd", "device_state", *arguments).redirectErrorStream(true).start()
-        val exited = process.waitFor(3, TimeUnit.SECONDS)
-        if (!exited) {
-            process.destroyForcibly()
-            DisplayResult(false, "外屏状态指令超时")
-        } else {
-            val message = process.inputStream.bufferedReader().readText().take(1600)
+    fun close() { reset().invokeOnCompletion { scope.cancel() } }
+}
+
+private fun deviceStateCommand(arguments: Array<out String>): DisplayResult = try {
+    val process = ProcessBuilder("/system/bin/cmd", "device_state", *arguments).redirectErrorStream(true).start()
+    try {
+        if (!process.waitFor(3, TimeUnit.SECONDS)) DisplayResult(false, "外屏状态指令超时") else {
+            val message = process.inputStream.bufferedReader().use { it.readText().take(1600) }
             val result = DisplayResult(process.exitValue() == 0 && !message.contains("SecurityException"),
                 "${arguments.joinToString(" ")} exit=${process.exitValue()} $message".trim())
             Log.i("VenasFold", result.detail)
             result
         }
-    } catch (e: Exception) {
-        Log.e("VenasFold", "device_state ${arguments.joinToString(" ")} failed", e)
-        DisplayResult(false, "${e.javaClass.simpleName}: ${e.message}")
+    } finally {
+        if (process.isAlive) process.destroyForcibly()
+        runCatching { process.inputStream.close() }
+        runCatching { process.outputStream.close() }
+        runCatching { process.errorStream.close() }
     }
-
-    fun close() { reset { scope.cancel() } }
+} catch (e: Exception) {
+    Log.e("VenasFold", "device_state ${arguments.joinToString(" ")} failed", e)
+    DisplayResult(false, "${e.javaClass.simpleName}: ${e.message}")
 }

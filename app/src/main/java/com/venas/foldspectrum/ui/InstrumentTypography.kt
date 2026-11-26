@@ -2,8 +2,6 @@ package com.venas.foldspectrum.ui
 
 import android.graphics.Paint
 import android.graphics.Typeface
-import android.graphics.fonts.Font as NativeFont
-import android.graphics.fonts.FontFamily as NativeFontFamily
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
@@ -31,19 +29,21 @@ internal val FixedLineTextStyle = TextStyle(
     ),
 )
 
-/** Android's glyph fallback keeps mixed Latin/CJK text in one measured text run. */
+/** A shared Latin/CJK face keeps song text consistent across languages. */
 @Composable
 internal fun rememberSongTypeface(): Typeface {
     val resources = LocalContext.current.resources
     return remember(resources) { songTypeface(resources) }
 }
 
+// Fixed bundled fonts have no locale/night variants. Keep a single strong reference
+// across page disposal and Activity recreation; never retain an Activity or Resources.
+private var cachedSongTypeface: Typeface? = null
+
+@Synchronized
 internal fun songTypeface(resources: android.content.res.Resources): Typeface {
-    val latin = NativeFontFamily.Builder(NativeFont.Builder(resources, R.font.sf_pro)
-        .setFontVariationSettings("'wght' 400, 'opsz' 17").build()).build()
-    val chinese = NativeFontFamily.Builder(NativeFont.Builder(resources, R.font.source_han_sans_sc_regular).build()).build()
-    return Typeface.CustomFallbackBuilder(latin).addCustomFallback(chinese)
-        .setSystemFallback("sans-serif").build()
+    cachedSongTypeface?.let { return it }
+    return resources.getFont(R.font.sarasa_gothic_sc_regular).also { cachedSongTypeface = it }
 }
 
 /** Each Canvas owns its paint; font selection is shared with the Compose labels. */

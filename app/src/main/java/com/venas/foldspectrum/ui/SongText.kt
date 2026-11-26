@@ -54,16 +54,20 @@ internal class SongTextView(context: android.content.Context) : TextView(context
         val alignment = Gravity.TOP or if (centered) Gravity.CENTER_HORIZONTAL else Gravity.START
         if (gravity != alignment) gravity = alignment
         if (metricsChanged || text.toString() != value) {
-            val metrics = paint.fontMetricsInt // SF Pro reference, not the current string's fallback.
-            val extra = linePx - (metrics.descent - metrics.ascent)
-            val descent = metrics.descent + (extra / 2f).roundToInt()
+            val metrics = paint.fontMetricsInt // Bundled face metrics, independent of the current string.
+            val baseline = fixedSongBaseline(metrics, linePx)
             text = SpannableString(value).apply {
-                setSpan(FixedSongLineHeight(descent - linePx, descent), 0, length,
+                setSpan(FixedSongLineHeight(-baseline, linePx - baseline), 0, length,
                     Spanned.SPAN_INCLUSIVE_INCLUSIVE)
             }
             lastLineHeight = linePx
         }
     }
+}
+
+internal fun fixedSongBaseline(metrics: Paint.FontMetricsInt, linePx: Int): Int {
+    val extra = linePx - (metrics.descent - metrics.ascent)
+    return linePx - metrics.descent - (extra / 2f).roundToInt()
 }
 
 private class FixedSongLineHeight(private val ascent: Int, private val descent: Int) : LineHeightSpan {

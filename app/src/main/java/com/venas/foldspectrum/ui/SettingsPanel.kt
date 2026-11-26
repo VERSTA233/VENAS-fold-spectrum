@@ -131,7 +131,7 @@ private fun SettingsControls(state: DeskState, actions: SettingsActions, modifie
                 }
                 Text("频谱显示 · $gainLabel", color = Muted, fontSize = 12.sp)
                 CompactSlider(value = state.spectrumGainDb, onValueChange = actions.spectrumGainDb,
-                    valueRange = -30f..30f, modifier = Modifier.fillMaxWidth().semantics {
+                    valueRange = -45f..45f, modifier = Modifier.fillMaxWidth().semantics {
                         contentDescription = "频谱显示增益，单位分贝"
                     })
             }

@@ -24,13 +24,11 @@ data class AudioFrame(
     val capture: Capture = Capture.IDLE,
     val bands: FloatArray = FloatArray(0),
     val bandLayout: List<SpectrumBand> = emptyList(),
+    val barReferenceCount: Int = 0,
     val wave: FloatArray = FloatArray(96),
     val levelDb: Float? = null,
     val dynamicDb: Float? = null,
-    val frames: Long = 0,
-    val nonzeroFrames: Long = 0,
     val lastFrameAt: Long = 0,
-    val error: String? = null,
 )
 
 /** Captures session 0 output mix. Never opens the microphone or MediaProjection. */
@@ -51,6 +49,7 @@ class AudioCapture(private val audioManager: AudioManager) {
         }
     }
     private var visualizer: Visualizer? = null
+    private var watchdog: Runnable? = null
     private var generation = 0
     private var alive = true
     private val crest = CrestWindow()
@@ -98,7 +97,10 @@ class AudioCapture(private val audioManager: AudioManager) {
             var layoutRate = 0
             var layoutSize = 0
             var bandLayout = emptyList<SpectrumBand>()
+            var barReferenceCount = 0
             var checkedSignalLatency = false
+            var frames = 0L
+            var nonzeroFrames = 0L
             val result = v.setDataCaptureListener(object : Visualizer.OnDataCaptureListener {
                 override fun onWaveFormDataCapture(visualizer: Visualizer?, waveform: ByteArray?, samplingRate: Int) {
                     if (run != generation || waveform == null) return
@@ -124,7 +126,9 @@ class AudioCapture(private val audioManager: AudioManager) {
                 override fun onFftDataCapture(visualizer: Visualizer?, fft: ByteArray?, samplingRate: Int) {
                     if (run != generation || fft == null) return
                     if (layoutRate != samplingRate || layoutSize != fft.size) {
-                        bandLayout = SpectrumMath.bandLayout(fft.size, samplingRate / 1000)
+                        val layout = SpectrumMath.displayLayout(fft.size, samplingRate / 1000)
+                        bandLayout = layout.bands
+                        barReferenceCount = layout.referenceBandCount
                         layoutRate = samplingRate
                         layoutSize = fft.size
                         Log.i(TAG, "FFT layout size=${fft.size} sampleRate=${samplingRate / 1000} bands=${bandLayout.size}")
@@ -136,6 +140,8 @@ class AudioCapture(private val audioManager: AudioManager) {
                         refreshPresentationDelay()
                     }
                     if (BuildConfig.DEBUG) {
+                        frames++
+                        if (nonzero) nonzeroFrames++
                         if (previousAt != 0L) maxGap = maxOf(maxGap, now - previousAt)
                         previousAt = now
                         if (previousFft?.contentEquals(fft) == true) {
@@ -160,16 +166,15 @@ class AudioCapture(private val audioManager: AudioManager) {
                     captured = old.copy(
                         capture = Capture.READY,
                         bands = SpectrumMath.bands(fft, bandLayout), bandLayout = bandLayout,
+                        barReferenceCount = barReferenceCount,
                         levelDb = if (publishMetrics) level else old.levelDb,
                         dynamicDb = if (publishMetrics) dynamic else old.dynamicDb,
-                        frames = old.frames + 1,
-                        nonzeroFrames = old.nonzeroFrames + if (nonzero) 1 else 0,
-                        lastFrameAt = now, error = null,
+                        lastFrameAt = now,
                     )
                     publishCapturedFrame(now)
-                    if (now - lastDiagnostic > 10_000) {
+                    if (BuildConfig.DEBUG && now - lastDiagnostic > 10_000) {
                         lastDiagnostic = now
-                        Log.i(TAG, "frames=${old.frames + 1} nonzero=${captured.nonzeroFrames} rate=${samplingRate / 1000} rms=$level peak=${measurement.mPeak / 100f} crest=$dynamic maxGapMs=$maxGap unchangedFftMs=$maxUnchanged nonzeroUnchangedFftMs=$maxNonzeroUnchanged waveGapMs=$maxWaveGap unchangedWaveMs=$maxWaveUnchanged nonzeroUnchangedWaveMs=$maxNonzeroWaveUnchanged")
+                        Log.i(TAG, "frames=$frames nonzero=$nonzeroFrames rate=${samplingRate / 1000} rms=$level peak=${measurement.mPeak / 100f} crest=$dynamic maxGapMs=$maxGap unchangedFftMs=$maxUnchanged nonzeroUnchangedFftMs=$maxNonzeroUnchanged waveGapMs=$maxWaveGap unchangedWaveMs=$maxWaveUnchanged nonzeroUnchangedWaveMs=$maxNonzeroWaveUnchanged")
                         maxGap = 0L
                         maxUnchanged = 0L
                         maxNonzeroUnchanged = 0L
@@ -184,7 +189,7 @@ class AudioCapture(private val audioManager: AudioManager) {
             val outputIds = mediaOutputs().map { it.id }.sorted()
             presentationDelayMs = bluetoothPresentationDelay()
             Log.i(TAG, "START session=0 size=${v.captureSize} rate=$rate measurements=$measuring")
-            val watchdog = object : Runnable {
+            val watch = object : Runnable {
                 private val startedAt = SystemClock.elapsedRealtime()
                 override fun run() {
                     if (run != generation || visualizer == null) return
@@ -205,7 +210,8 @@ class AudioCapture(private val audioManager: AudioManager) {
                     } else worker.postDelayed(this, 1000)
                 }
             }
-            worker.postDelayed(watchdog, 1000)
+            watchdog = watch
+            worker.postDelayed(watch, 1000)
         } catch (e: Exception) {
             fail("${e.javaClass.simpleName}: ${e.message}")
         }
@@ -297,7 +303,7 @@ class AudioCapture(private val audioManager: AudioManager) {
     private fun fail(message: String) {
         Log.e(TAG, message)
         release()
-        captured = AudioFrame(capture = Capture.UNAVAILABLE, error = message)
+        captured = AudioFrame(capture = Capture.UNAVAILABLE)
         mutable.value = captured
     }
 
@@ -323,6 +329,8 @@ class AudioCapture(private val audioManager: AudioManager) {
 
     private fun release() {
         generation++
+        watchdog?.let(worker::removeCallbacks)
+        watchdog = null
         clearPresentation()
         presentationDelayMs = 0L
         visualizer?.let {
@@ -337,6 +345,8 @@ class AudioCapture(private val audioManager: AudioManager) {
     fun close() = worker.post {
         alive = false
         release()
+        captured = AudioFrame()
+        mutable.value = captured
         thread.quitSafely()
     }
 
