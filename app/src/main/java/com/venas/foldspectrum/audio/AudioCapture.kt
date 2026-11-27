@@ -79,7 +79,10 @@ class AudioCapture(private val audioManager: AudioManager) {
             v.enabled = false
             val limits = Visualizer.getCaptureSizeRange()
             v.captureSize = 1024.coerceIn(limits[0], limits[1])
-            v.scalingMode = Visualizer.SCALING_MODE_AS_PLAYED
+            // Normalize waveform/FFT capture only; keep RMS measurement and audio output unchanged.
+            check(v.setScalingMode(Visualizer.SCALING_MODE_NORMALIZED) == Visualizer.SUCCESS) {
+                "无法启用归一化采样"
+            }
             measuring = v.setMeasurementMode(Visualizer.MEASUREMENT_MODE_PEAK_RMS) == Visualizer.SUCCESS
             val rate = minOf(Visualizer.getMaxCaptureRate(), 30_000)
             var previousFft: ByteArray? = null

@@ -35,8 +35,6 @@ data class DeskState(
     val followSystemBrightness: Boolean = true,
     val brightness: Float = .5f,
     val burnInEnabled: Boolean = true,
-    val spectrumGainEnabled: Boolean = false,
-    val spectrumGainDb: Float = 0f,
     val mediaVolume: Int = 0,
     val minMediaVolume: Int = 0,
     val maxMediaVolume: Int = 0,
@@ -49,7 +47,6 @@ data class DeskState(
     val mediaDisappeared: Boolean = false,
     val audio: AudioFrame = AudioFrame(),
 ) {
-    val displayGainDb get() = if (spectrumGainEnabled) spectrumGainDb else 0f
     val permissionsReady get() = notificationGranted && audioGranted
     val status: DisplayStatus get() = displayStatus(
         if (mediaDisappeared) Playback.LOADING else media?.playback ?: Playback.STOPPED,
@@ -71,8 +68,6 @@ class DeskController(private val context: Context) {
         nonFoldMode = initialNonFoldMode(context, preferences, sensor.available),
         keepScreenOn = preferences.getBoolean("keepScreenOn", true),
         burnInEnabled = preferences.getBoolean("burnInEnabled", true),
-        spectrumGainEnabled = preferences.getBoolean("spectrumGainEnabled", false),
-        spectrumGainDb = preferences.getFloat("spectrumGainDb", 0f).coerceIn(-45f, 45f),
         followSystemBrightness = preferences.getBoolean("followSystemBrightness", true),
         brightness = preferences.getFloat("brightness", .5f).coerceIn(.1f, 1f)))
     val state = mutable.asStateFlow()
@@ -322,18 +317,6 @@ class DeskController(private val context: Context) {
     fun setBurnInEnabled(value: Boolean) {
         preferences.edit().putBoolean("burnInEnabled", value).apply()
         mutable.update { it.copy(burnInEnabled = value) }
-    }
-
-    fun setSpectrumGainEnabled(value: Boolean) {
-        preferences.edit().putBoolean("spectrumGainEnabled", value).apply()
-        mutable.update { it.copy(spectrumGainEnabled = value) }
-    }
-
-    fun setSpectrumGainDb(value: Float) {
-        val gain = kotlin.math.round(value).coerceIn(-45f, 45f)
-        if (gain == mutable.value.spectrumGainDb) return
-        preferences.edit().putFloat("spectrumGainDb", gain).apply()
-        mutable.update { it.copy(spectrumGainDb = gain) }
     }
 
     /** Read the active route's system media volume; never restore a saved volume. */

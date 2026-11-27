@@ -45,8 +45,6 @@ data class SettingsActions(
     val burnInEnabled: (Boolean) -> Unit,
     val refreshMediaVolume: () -> Unit,
     val mediaVolume: (Int) -> Unit,
-    val spectrumGainEnabled: (Boolean) -> Unit,
-    val spectrumGainDb: (Float) -> Unit,
 )
 
 private val Divider = Color(0xFF30343B)
@@ -118,23 +116,6 @@ private fun SettingsControls(state: DeskState, actions: SettingsActions, modifie
             CompactSlider(value = state.brightness, onValueChange = actions.brightness,
                 onValueChangeFinished = actions.saveBrightness, valueRange = .1f..1f,
                 modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp))
-        }
-        HorizontalDivider(color = Divider)
-        SettingSwitch("频谱增益调节", "改变频谱波动幅度，不改变音频音量",
-            state.spectrumGainEnabled, actions.spectrumGainEnabled)
-        AnimatedVisibility(state.spectrumGainEnabled, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
-            Column(Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
-                val gain = state.spectrumGainDb.roundToInt()
-                val gainLabel = when {
-                    gain > 0 -> "+$gain dB"
-                    else -> "$gain dB"
-                }
-                Text("频谱显示 · $gainLabel", color = Muted, fontSize = 12.sp)
-                CompactSlider(value = state.spectrumGainDb, onValueChange = actions.spectrumGainDb,
-                    valueRange = -45f..45f, modifier = Modifier.fillMaxWidth().semantics {
-                        contentDescription = "频谱显示增益，单位分贝"
-                    })
-            }
         }
         HorizontalDivider(color = Divider)
         val supportsMask = Build.VERSION.SDK_INT >= 33

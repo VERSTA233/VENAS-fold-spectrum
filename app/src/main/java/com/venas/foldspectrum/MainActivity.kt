@@ -60,8 +60,7 @@ class MainActivity : ComponentActivity() {
                 SettingsActions(controller::setFlip, controller::setNonFoldMode,
                     controller::setKeepScreenOn, controller::setFollowSystemBrightness,
                     controller::setBrightness, controller::saveBrightness,
-                    controller::setBurnInEnabled, controller::refreshMediaVolume, controller::setMediaVolume,
-                    controller::setSpectrumGainEnabled, controller::setSpectrumGainDb)
+                    controller::setBurnInEnabled, controller::refreshMediaVolume, controller::setMediaVolume)
             }
             BackHandler(state.desk || state.entering || state.manualLandscape) { controller.exitDesk() }
             VenasApp(state, onAudioPermission = ::requestAudioPermission,

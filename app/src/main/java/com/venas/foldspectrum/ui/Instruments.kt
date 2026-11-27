@@ -27,7 +27,6 @@ import java.util.Locale
 import kotlin.math.*
 
 private const val SpectrumFloorDb = -90f
-private const val WaveformDisplayGain = 3f
 private val FrequencyLabels = listOf(20 to "20", 200 to "200", 500 to "500", 1000 to "1k",
     2000 to "2k", 4000 to "4k", 8000 to "8k", 16000 to "16k")
 
@@ -53,6 +52,17 @@ internal data class DrawingFrame(
     val barReferenceCount: Int = 0,
 )
 
+/** Smooth neighboring envelope columns, keeping negative/positive bounds separate.
+ * This adds no temporal buffering; silence stays zero and missing neighbors use the edge sample.
+ */
+internal fun waveformTarget(wave: FloatArray?, index: Int): Float {
+    val center = wave?.getOrNull(index) ?: return 0f
+    val left = wave.getOrNull(index - 2) ?: center
+    val right = wave.getOrNull(index + 2) ?: center
+    // Visualizer already normalizes capture. The old 3x boost flattened its peaks.
+    return (left * .25f + center * .5f + right * .25f).coerceIn(-1f, 1f)
+}
+
 @Composable
 internal fun smoothAudio(state: DeskState): DrawingFrame {
     val latest by rememberUpdatedState(state)
@@ -65,8 +75,6 @@ internal fun smoothAudio(state: DeskState): DrawingFrame {
             val active = latest.status == DisplayStatus.PLAYING
             val targetBands = if (active) latest.audio.bands else null
             val targetWave = if (active) latest.audio.wave else null
-            val gain = latest.displayGainDb
-            val waveGain = WaveformDisplayGain * DisplayGain.amplitude(gain)
             // Retain the previous geometry while paused so the bars can decay.
             val layout = latest.audio.bandLayout.ifEmpty { rendered.layout }
             val barReferenceCount = if (latest.audio.bandLayout.isEmpty()) rendered.barReferenceCount
@@ -74,11 +82,10 @@ internal fun smoothAudio(state: DeskState): DrawingFrame {
             val sameLayout = layout == rendered.layout
             val rise = 1f - exp(-dt / .10f)
             val fall = 1f - exp(-dt / .20f)
-            val waveBlend = 1f - exp(-dt / (if (active) .035f else .09f))
+            // Soften rapid waveform fluctuations without changing capture cadence or spectrum timing.
+            val waveBlend = 1f - exp(-dt / (if (active) .075f else .09f))
             val nextBands = FloatArray(layout.size) { index ->
-                val target = targetBands?.getOrNull(index)?.let {
-                    DisplayGain.decibels(it, gain, SpectrumMath.FLOOR_DB)
-                }?.coerceAtLeast(SpectrumFloorDb) ?: SpectrumFloorDb
+                val target = targetBands?.getOrNull(index)?.coerceAtLeast(SpectrumFloorDb) ?: SpectrumFloorDb
                 val old = if (sameLayout) rendered.bands[index] else SpectrumFloorDb
                 val next = old + (target - old) * (if (target > old) rise else fall)
                 if (!active && abs(next - target) < .05f) target else next
@@ -89,7 +96,7 @@ internal fun smoothAudio(state: DeskState): DrawingFrame {
                 SpectrumPeak.advance(old, nextBands[index], dt)
             }
             val nextWave = FloatArray(96) { index ->
-                val target = ((targetWave?.getOrNull(index) ?: 0f) * waveGain).coerceIn(-1f, 1f)
+                val target = waveformTarget(targetWave, index)
                 val next = rendered.wave[index] + (target - rendered.wave[index]) * waveBlend
                 if (!active && abs(next - target) < .001f) target else next
             }
@@ -222,10 +229,8 @@ internal fun Metrics(state: DeskState, wave: FloatArray, layout: DeskLayout, mod
     val u = layout.unit
     val inset = layout.metricInsetDp.dp
     val active = state.status == DisplayStatus.PLAYING
-    val gain = state.displayGainDb
     val level = if (!active) "—" else state.audio.levelDb?.let {
-        if (it <= -96f) "−∞" else String.format(Locale.US, "%.1f",
-            DisplayGain.decibels(it, gain, -96f)).replace('-', '−')
+        if (it <= -96f) "−∞" else String.format(Locale.US, "%.1f", it).replace('-', '−')
     } ?: "—"
     val dynamic = if (active) state.audio.dynamicDb?.let { String.format(Locale.US, "%.1f", it) } ?: "—" else "—"
     Row(modifier.padding(top = (10 * u).dp, bottom = (9 * u).dp)) {
@@ -249,10 +254,9 @@ internal fun Metrics(state: DeskState, wave: FloatArray, layout: DeskLayout, mod
             }
         }
         VerticalDivider(color = Grid, thickness = .5.dp)
-        val gainLabel = if (gain > 0f) "+${gain.roundToInt()}" else "${gain.roundToInt()}"
-        Metric(if (gain != 0f) "LEVEL $gainLabel" else "LEVEL", level, "dBFS", layout,
+        Metric("LEVEL", level, "dBFS", layout,
             Modifier.weight(1f).padding(horizontal = inset).semantics {
-                contentDescription = if (gain != 0f) "显示电平，显示增益 $gainLabel 分贝" else "音频电平"
+                contentDescription = "音频电平"
             })
         VerticalDivider(color = Grid, thickness = .5.dp)
         Metric("DYNAMIC", dynamic, "dB", layout, Modifier.weight(1f).padding(start = inset))
